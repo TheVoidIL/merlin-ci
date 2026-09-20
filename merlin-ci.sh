@@ -350,14 +350,18 @@ action_diagnostics() {
     echo ""
     echo "4. Required Command Availability:"
     for tool in curl awk nice; do
-        if command -v "$tool" >/dev/null 2>&1; then
-            printf "   [OK]   %-12s (%s)\n" "$tool" "$(command -v "$tool")"
+        if which "$tool" >/dev/null 2>&1 || command -v "$tool" >/dev/null 2>&1; then
+            local tool_path
+            tool_path="$(which "$tool" 2>/dev/null || command -v "$tool" 2>/dev/null)"
+            printf "   [OK]   %-12s (%s)\n" "$tool" "$tool_path"
         else
             printf "   [FAIL] %-12s (Missing!)\n" "$tool"
         fi
     done
 
-    ui_pause
+    if [ "${1:-}" != "--no-pause" ]; then
+        ui_pause
+    fi
 }
 
 action_scrape_email() {
@@ -706,7 +710,7 @@ cli_main() {
             fi
             ;;
         diag)
-            action_diagnostics
+            action_diagnostics "--no-pause"
             ;;
         scrape-email|email-scrape|import-email)
             action_scrape_email "$@"

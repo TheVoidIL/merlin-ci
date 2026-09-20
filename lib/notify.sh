@@ -18,7 +18,14 @@ notify_email() {
     local now_ts
     now_ts="$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date)"
 
-    if [ "$MCI_EMAIL_ENABLED" != "1" ]; then
+    [ -z "$MCI_SMTP_PASS" ] && _is_function config_load && config_load 2>/dev/null || true
+
+    if [ "$MCI_EMAIL_ENABLED" != "1" ] || [ -z "$MCI_SMTP_PASS" ]; then
+        if [ -x "/jffs/scripts/send_alert.sh" ]; then
+            /jffs/scripts/send_alert.sh "$subject" "$plain_log"
+            echo "[$now_ts] [SUCCESS] Delivered email via /jffs/scripts/send_alert.sh" >> "$email_log"
+            return 0
+        fi
         echo "[$now_ts] [SKIP] Email disabled (MCI_EMAIL_ENABLED=$MCI_EMAIL_ENABLED)" >> "$email_log"
         return 0
     fi

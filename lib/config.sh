@@ -7,6 +7,15 @@ MCI_CONFIG_DIR="/jffs/addons/merlin-ci"
 MCI_CONFIG_FILE="${MCI_CONFIG_DIR}/merlin-ci.conf"
 MCI_LOCAL_CONF="./merlin-ci.conf"
 
+_has_command() {
+    which "$1" >/dev/null 2>&1 || command -v "$1" >/dev/null 2>&1
+}
+
+_which() {
+    which "$1" 2>/dev/null || command -v "$1" 2>/dev/null
+}
+
+
 config_find_usb_storage() {
     if [ -d "/opt" ] && [ -w "/opt" ]; then
         echo "/opt/var/merlin-ci"
@@ -99,6 +108,24 @@ config_load() {
     fi
 
     config_set_defaults
+
+    # Seamless AMTM Auto-Inheritance: If email credentials are not set in merlin-ci.conf, auto-inherit from AMTM!
+    if [ -z "$MCI_SMTP_USER" ] || [ -z "$MCI_SMTP_PASS" ]; then
+        if [ -f "/jffs/addons/amtm/mail/email.conf" ] && [ -f "/jffs/addons/amtm/mail/emailpw.enc" ]; then
+            local amtm_conf="/jffs/addons/amtm/mail/email.conf"
+            local amtm_enc
+            amtm_enc="$(grep -E '^[[:space:]]*emailPwEnc=' "$amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
+            [ -z "$amtm_enc" ] && amtm_enc="-pbkdf2"
+            
+            [ -z "$MCI_SMTP_USER" ] && MCI_SMTP_USER="$(grep -E '^[[:space:]]*USERNAME=' "$amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
+            [ -z "$MCI_SMTP_PASS" ] && MCI_SMTP_PASS="$(openssl aes-256-cbc $amtm_enc -d -in /jffs/addons/amtm/mail/emailpw.enc -pass pass:ditbabot,isoi 2>/dev/null || true)"
+            [ -z "$MCI_SMTP_FROM" ] && MCI_SMTP_FROM="$(grep -E '^[[:space:]]*FROM_ADDRESS=' "$amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
+            [ -z "$MCI_SMTP_TO" ] && MCI_SMTP_TO="$(grep -E '^[[:space:]]*TO_ADDRESS=' "$amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
+            [ -z "$MCI_SMTP_SERVER" ] && MCI_SMTP_SERVER="$(grep -E '^[[:space:]]*SMTP=' "$amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
+            [ -z "$MCI_SMTP_PORT" ] && MCI_SMTP_PORT="$(grep -E '^[[:space:]]*PORT=' "$amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
+            [ -n "$MCI_SMTP_USER" ] && [ -n "$MCI_SMTP_PASS" ] && MCI_EMAIL_ENABLED=1
+        fi
+    fi
 
     mkdir -p "$MCI_LOG_DIR" "$MCI_BACKUP_DIR" 2>/dev/null || true
 }
