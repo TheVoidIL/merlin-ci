@@ -1,0 +1,10 @@
+# Merlin-CI Scratch & Temporary Files
+scratch/
+*.tmp
+*.bak
+*.log
+
+# OS Metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
