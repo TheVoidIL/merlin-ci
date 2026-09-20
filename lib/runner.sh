@@ -179,7 +179,7 @@ runner_execute_job() {
 
         if [ "$b_status" -ne 0 ]; then
             printf "${COLOR_RED}${COLOR_BOLD}--> [ERROR]${COLOR_RESET} ${COLOR_RED}Backup stage failed! Aborting to prevent inconsistent state.${COLOR_RESET}\n" | tee -a "$build_log"
-            _finish_job "$name" "$timestamp" "$build_log" "$latest_log" "$global_latest" "BACKUP_FAILED" 1 "$start_epoch"
+            _finish_job "$name" "$timestamp" "$build_log" "$latest_log" "$global_latest" "BACKUP_FAILED" 1 "$start_epoch" "$trigger_source" "$force_flag"
             return 1
         fi
         printf "   ${COLOR_GREEN}[OK]${COLOR_RESET} Backup stored at: ${COLOR_DIM}%s${COLOR_RESET}\n" "$backup_dir" | tee -a "$build_log"
@@ -217,7 +217,7 @@ runner_execute_job() {
             mci_rollback "$backup_dir" 2>&1 | tee -a "$build_log" || true
             printf "${COLOR_YELLOW}${COLOR_BOLD}--> [ROLLBACK]${COLOR_RESET} Rollback completed.\n" | tee -a "$build_log"
         fi
-        _finish_job "$name" "$timestamp" "$build_log" "$latest_log" "$global_latest" "ROLLED_BACK" "$run_status" "$start_epoch"
+        _finish_job "$name" "$timestamp" "$build_log" "$latest_log" "$global_latest" "ROLLED_BACK" "$run_status" "$start_epoch" "$trigger_source" "$force_flag"
         return "$run_status"
     fi
 
@@ -241,7 +241,7 @@ runner_execute_job() {
                 mci_rollback "$backup_dir" 2>&1 | tee -a "$build_log" || true
                 printf "${COLOR_YELLOW}${COLOR_BOLD}--> [ROLLBACK]${COLOR_RESET} Rollback completed.\n" | tee -a "$build_log"
             fi
-            _finish_job "$name" "$timestamp" "$build_log" "$latest_log" "$global_latest" "ROLLED_BACK" "$verify_status" "$start_epoch"
+            _finish_job "$name" "$timestamp" "$build_log" "$latest_log" "$global_latest" "ROLLED_BACK" "$verify_status" "$start_epoch" "$trigger_source" "$force_flag"
             return "$verify_status"
         fi
         printf "${COLOR_GREEN}--> [VERIFY]${COLOR_RESET} Verification checks passed successfully! ${COLOR_GREEN}${COLOR_BOLD}[PASS]${COLOR_RESET}\n" | tee -a "$build_log"
@@ -250,7 +250,7 @@ runner_execute_job() {
     fi
 
     # Stage 4: Success
-    _finish_job "$name" "$timestamp" "$build_log" "$latest_log" "$global_latest" "SUCCESS" 0 "$start_epoch"
+    _finish_job "$name" "$timestamp" "$build_log" "$latest_log" "$global_latest" "SUCCESS" 0 "$start_epoch" "$trigger_source" "$force_flag"
 
     runner_rotate_backups "$name"
     runner_rotate_logs
@@ -267,6 +267,8 @@ _finish_job() {
     local status="$6"
     local exit_code="$7"
     local start_epoch="$8"
+    local trigger_source="${9:-manual}"
+    local force_flag="${10:-0}"
 
     local end_epoch
     end_epoch="$(date +%s)"
@@ -291,12 +293,55 @@ _finish_job() {
     echo "$(date '+%Y-%m-%d %H:%M:%S')" > "${MCI_LOG_DIR}/last_run_time_${name}"
     echo "$(date '+%Y-%m-%d %H:%M:%S')" > "${MCI_LOG_DIR}/last_run_time"
 
+    local is_healing_event=0
+    # A healing event occurs when a watchdog job triggered autonomously on an anomaly and restored nominal state
+    if [ "${JOB_TYPE:-}" = "watchdog" ] && [ "$force_flag" != "1" ] && [ "$status" = "SUCCESS" ]; then
+        is_healing_event=1
+    fi
+
+    # Record run in 24-hour activity log for morning daily digest aggregation
+    local daily_log="${MCI_LOG_DIR}/daily_activity.log"
+    mkdir -p "$(dirname "$daily_log")" 2>/dev/null || true
+    local now_time
+    now_time="$(date '+%H:%M:%S' 2>/dev/null || date)"
+    if [ "$status" = "SUCCESS" ]; then
+        if [ "$is_healing_event" = "1" ]; then
+            printf "[%s] [HEALED] %s (Auto-repaired in %ss)\n" "$now_time" "$name" "$duration" >> "$daily_log" 2>/dev/null || true
+        else
+            printf "[%s] [PASS] %s (Completed in %ss)\n" "$now_time" "$name" "$duration" >> "$daily_log" 2>/dev/null || true
+        fi
+    else
+        printf "[%s] [%s] %s (Exit code: %s)\n" "$now_time" "$status" "$name" "$exit_code" >> "$daily_log" 2>/dev/null || true
+    fi
+
     if _is_function mci_notify; then
         mci_notify "$status" "$duration" >> "$final_log" 2>&1 || true
     fi
 
-    # Suppress redundant CI runner notification if job explicitly disabled success email (e.g. self-reporting digests)
-    if [ "$status" = "SUCCESS" ] && [ "${JOB_NOTIFY_SUCCESS}" = "0" ]; then
+    # 1. Failure / Rollback: ALWAYS dispatch immediate alert email
+    if [ "$status" = "FAILED" ] || [ "$status" = "ROLLED_BACK" ]; then
+        if [ "${MCI_NOTIFY_ON_FAILURE:-1}" = "1" ]; then
+            local log_summary
+            log_summary="$(tail -n 60 "$final_log" 2>/dev/null)"
+            notify_dispatch "$status" "$name" "$duration" "$log_summary" "$MCI_OLD_VERSION" "$MCI_NEW_VERSION"
+        fi
+        return 0
+    fi
+
+    # 2. Watchdog Needed Healing: ALWAYS dispatch immediate alert email
+    if [ "$is_healing_event" = "1" ]; then
+        if [ "${MCI_NOTIFY_ON_HEAL:-1}" = "1" ]; then
+            local log_summary
+            log_summary="$(tail -n 60 "$final_log" 2>/dev/null)"
+            notify_dispatch "HEALED" "$name" "$duration" "$log_summary" "$MCI_OLD_VERSION" "$MCI_NEW_VERSION"
+        fi
+        return 0
+    fi
+
+    # 3. Routine Pass / Success:
+    # Silent by default (MCI_NOTIFY_ON_SUCCESS=0).
+    # All passed info is batched into daily_activity.log and delivered in the single morning digest email!
+    if [ "${JOB_NOTIFY_SUCCESS:-}" = "0" ] || [ "${MCI_NOTIFY_ON_SUCCESS:-0}" = "0" ]; then
         return 0
     fi
 

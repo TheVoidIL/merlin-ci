@@ -51,6 +51,9 @@ notify_email() {
                 subject="[Merlin-CI] SUCCESS: Job ${job_name} Completed on ${router_name}"
             fi
             ;;
+        HEALED|healed)
+            subject="[Merlin-CI] HEALED: Watchdog ${job_name} Auto-Repaired on ${router_name}"
+            ;;
         ROLLED_BACK|rolled_back)
             subject="[Merlin-CI] ROLLED BACK: Job ${job_name} on ${router_name}"
             ;;
@@ -80,6 +83,9 @@ Version Information:
         TRIGGERED|triggered)
             action_summary="Action: Trigger condition met. Pipeline execution has started (Pre-flight backup -> Action -> Smoke test verification)."
             ;;
+        HEALED|healed)
+            action_summary="Action: Autonomous Watchdog detected an anomaly, executed self-healing recovery, and verified nominal state restored."
+            ;;
         SUCCESS|success)
             action_summary="Action: All pipeline stages completed and CI smoke tests verified successfully!"
             ;;
@@ -96,7 +102,7 @@ Version Information:
 
     local badge_bg="#10b981" # Green
     case "$status" in
-        SUCCESS|success|PASS|pass|RESOLVED|resolved) badge_bg="#10b981" ;; # Green
+        SUCCESS|success|PASS|pass|RESOLVED|resolved|HEALED|healed) badge_bg="#10b981" ;; # Green
         FAILED|failed|FAIL|fail) badge_bg="#ef4444" ;; # Red
         TRIGGERED|triggered) badge_bg="#f59e0b" ;; # Amber/Orange
         ROLLED_BACK|rolled_back) badge_bg="#f59e0b" ;; # Amber/Orange

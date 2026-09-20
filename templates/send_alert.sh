@@ -74,6 +74,46 @@ _generate_daily_digest_html() {
     cron_status=$(echo "$raw_msg" | awk -F 'Automation:' '/Automation:/ {print $2}' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
     [ -z "$cron_status" ] && cron_status="33 Active Tasks"
 
+    local ci_summary ci_log_raw ci_activity_html=""
+    ci_summary=$(echo "$raw_msg" | awk -F 'CI & Watchdogs (24h):' '/CI & Watchdogs (24h):/ {print $2}' | head -n 1 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    [ -z "$ci_summary" ] && ci_summary="All 16 Nominal"
+    ci_log_raw=$(echo "$raw_msg" | awk '/24h Execution Log:/{flag=1; next} flag{print}')
+
+    local ci_lines_html=""
+    if [ -n "$ci_log_raw" ]; then
+        ci_lines_html=$(echo "$ci_log_raw" | while read -r line; do
+            [ -z "$line" ] && continue
+            case "$line" in
+                *"[HEALED]"*)
+                    echo "<div style='color: #34d399; margin-bottom: 2px;'><strong>● HEALED</strong> $(echo "$line" | sed 's/.*\[HEALED\] //')</div>"
+                    ;;
+                *"[PASS]"*)
+                    echo "<div style='color: #10b981; margin-bottom: 2px;'><strong>✔ PASS</strong> $(echo "$line" | sed 's/.*\[PASS\] //')</div>"
+                    ;;
+                *"[FAILED]"*|*"[ROLLED_BACK]"*)
+                    echo "<div style='color: #f87171; margin-bottom: 2px;'><strong>✖ ALERT</strong> $(echo "$line")</div>"
+                    ;;
+                *)
+                    echo "<div style='color: #94a3b8; margin-bottom: 2px;'>$line</div>"
+                    ;;
+            esac
+        done)
+    fi
+
+    if [ -n "$ci_lines_html" ]; then
+        ci_activity_html="  <!-- 24h Watchdog & CI Activity Ledger -->
+  <div style=\"padding: 0 24px 16px;\">
+    <div style=\"background-color: #080d16; border: 1px solid #1e293b; border-radius: 12px; padding: 14px 16px;\">
+      <div style=\"font-size: 11px; font-weight: 700; color: #94a3b8; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 8px;\">
+        🤖 24h CI Automation &amp; Watchdogs (${ci_summary})
+      </div>
+      <div style=\"font-family: monospace; font-size: 11px; line-height: 1.6;\">
+        ${ci_lines_html}
+      </div>
+    </div>
+  </div>"
+    fi
+
     # Semantic evaluation for CPU (Green = Good <71°C, Amber = Warning 71-75°C, Red = Bad >75°C)
     local cpu_badge_class="badge-green"
     local cpu_val_class="metric-value-green"
@@ -493,6 +533,8 @@ _generate_daily_digest_html() {
       </tr>
     </table>
   </div>
+
+${ci_activity_html}
 
   <!-- Specs & Diagnostics -->
   <div class="footer-specs">

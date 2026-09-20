@@ -66,6 +66,11 @@ config_set_defaults() {
     MCI_SMTP_TLS="${MCI_SMTP_TLS:-1}"
     # Notification Frequency: 0 = Single summary email upon completion (Recommended), 1 = Two emails (TRIGGERED + SUCCESS)
     MCI_NOTIFY_ON_TRIGGER="${MCI_NOTIFY_ON_TRIGGER:-0}"
+    # Notification Policy: 0 = Silent on routine passes (batch into single morning digest), 1 = Send email on each pass
+    MCI_NOTIFY_ON_SUCCESS="${MCI_NOTIFY_ON_SUCCESS:-0}"
+    # Immediate Alerting: Always dispatch immediate email if a job fails, rolls back, or watchdog heals an anomaly
+    MCI_NOTIFY_ON_FAILURE="${MCI_NOTIFY_ON_FAILURE:-1}"
+    MCI_NOTIFY_ON_HEAL="${MCI_NOTIFY_ON_HEAL:-1}"
 
     # Webhook Notifications
     MCI_DISCORD_WEBHOOK_URL="${MCI_DISCORD_WEBHOOK_URL:-}"
