@@ -777,9 +777,7 @@ else
     esac
 fi
 
-local esc_char
 esc_char="$(printf '\033')"
-local clean_plain_message
 clean_plain_message="$(echo "$MESSAGE" | sed "s/${esc_char}\[[0-9;]*[a-zA-Z]//g")"
 
 BOUNDARY="MCI_ALERT_$$"
