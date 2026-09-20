@@ -72,19 +72,50 @@ mci_run() {
 
     # Step 1: Dump NVRAM configuration
     echo "--> [VAULT] Exporting sorted NVRAM configuration..."
-    if command -v nvram >/dev/null 2>&1; then
-        nvram show 2>/dev/null | sort > "${snapshot_dir}/nvram_full.cfg"
-        echo "   [OK] Exported $(wc -l < "${snapshot_dir}/nvram_full.cfg" 2>/dev/null || echo 0) NVRAM parameters."
+    local nvram_bin=""
+    if [ -x "/sbin/nvram" ]; then
+        nvram_bin="/sbin/nvram"
+    elif [ -x "/bin/nvram" ]; then
+        nvram_bin="/bin/nvram"
+    elif [ -x "/usr/sbin/nvram" ]; then
+        nvram_bin="/usr/sbin/nvram"
+    else
+        nvram_bin="nvram"
+    fi
+
+    # Attempt full NVRAM export (capturing both stdout and stderr)
+    $nvram_bin show > "${snapshot_dir}/nvram_full.cfg" 2>&1 || true
+
+    # Fallback if empty or failed
+    if [ ! -s "${snapshot_dir}/nvram_full.cfg" ]; then
+        nvram show > "${snapshot_dir}/nvram_full.cfg" 2>&1 || true
+    fi
+
+    # Optional sorting if sort utility exists
+    if [ -s "${snapshot_dir}/nvram_full.cfg" ]; then
+        if command -v sort >/dev/null 2>&1 || which sort >/dev/null 2>&1; then
+            sort -u "${snapshot_dir}/nvram_full.cfg" > "${snapshot_dir}/nvram_full.cfg.tmp" 2>/dev/null && \
+                mv -f "${snapshot_dir}/nvram_full.cfg.tmp" "${snapshot_dir}/nvram_full.cfg" 2>/dev/null || true
+        fi
+        local param_count
+        param_count="$(wc -l "${snapshot_dir}/nvram_full.cfg" 2>/dev/null | awk '{print $1}')"
+        echo "   [OK] Exported ${param_count:-0} NVRAM parameters."
+    else
+        echo "   [WARN] Primary NVRAM export empty; attempting raw nvram dump..."
+        nvram dump > "${snapshot_dir}/nvram_full.cfg" 2>&1 || true
+        if [ -s "${snapshot_dir}/nvram_full.cfg" ]; then
+            echo "   [OK] Raw NVRAM dump recorded."
+        else
+            echo "   [ERROR] Unable to extract NVRAM parameters via show or dump."
+        fi
     fi
 
     # Step 2: Export static DHCP and DNS reservations
     echo "--> [VAULT] Saving static DHCP leases and hosts..."
-    if [ -f /etc/hosts.dnsmasq ]; then
-        cp -pf /etc/hosts.dnsmasq "${snapshot_dir}/" 2>/dev/null || true
-    fi
-    if [ -f /jffs/configs/dnsmasq.conf.add ]; then
-        cp -pf /jffs/configs/dnsmasq.conf.add "${snapshot_dir}/" 2>/dev/null || true
-    fi
+    [ -f /etc/hosts.dnsmasq ] && cp -pf /etc/hosts.dnsmasq "${snapshot_dir}/" 2>/dev/null || true
+    [ -f /etc/hosts ] && cp -pf /etc/hosts "${snapshot_dir}/hosts.system" 2>/dev/null || true
+    [ -f /jffs/configs/dnsmasq.conf.add ] && cp -pf /jffs/configs/dnsmasq.conf.add "${snapshot_dir}/" 2>/dev/null || true
+    [ -f /jffs/scripts/known_macs.txt ] && cp -pf /jffs/scripts/known_macs.txt "${snapshot_dir}/" 2>/dev/null || true
 
     # Step 3: Archive /jffs/ directory
     echo "--> [VAULT] Compressing /jffs/ into tarball archive..."
