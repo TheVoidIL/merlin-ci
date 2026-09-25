@@ -48,12 +48,14 @@ fi
 # 3. File Installation
 INSTALL_DIR="/jffs/addons/merlin-ci"
 echo "--> Step 3: Installing files to $INSTALL_DIR..."
-mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/templates" "$INSTALL_DIR/jobs"
+mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/templates" "$INSTALL_DIR/jobs" "$INSTALL_DIR/config"
 
 SCRIPT_SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 cp -rf "$SCRIPT_SRC_DIR/merlin-ci.sh" "$INSTALL_DIR/"
 cp -rf "$SCRIPT_SRC_DIR/lib/"* "$INSTALL_DIR/lib/"
 cp -rf "$SCRIPT_SRC_DIR/templates/"* "$INSTALL_DIR/templates/"
+[ ! -f "$INSTALL_DIR/config/iot_exclude.conf" ] && [ -f "$SCRIPT_SRC_DIR/templates/iot_exclude.conf" ] && cp -f "$SCRIPT_SRC_DIR/templates/iot_exclude.conf" "$INSTALL_DIR/config/" || true
+
 
 # Copy jobs without overwriting existing customized jobs
 for job in "$SCRIPT_SRC_DIR/jobs/"*.job.sh; do

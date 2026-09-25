@@ -17,17 +17,39 @@ JOB_ENABLED=1
 JOB_TYPE="watchdog"
 
 DEFAULT_IOT_IPS="192.168.53.129 192.168.53.94 192.168.53.96 192.168.53.165 192.168.53.246"
+DEFAULT_EXCLUDE="192.168.53.144 fe:01:d0:ea:bd:c1 SM-L310 Galaxy-Watch7"
 IOT_SUBNET_PREFIX="${MCI_IOT_SUBNET_PREFIX:-192.168.53.}"
 MAX_CONNS="${MCI_IOT_MAX_CONNS:-20}"
+MCI_IOT_EXCLUDE="${MCI_IOT_EXCLUDE:-}"
 ROGUE_INFO_FILE="/tmp/mci_iot_rogue_devices.info"
 ROGUE_DESTS_FILE="/tmp/mci_iot_rogue_dests.info"
-IOT_CONFIG_FILE="/jffs/addons/merlin-ci/config/iot_devices.conf"
+IOT_CONFIG_DIR="/jffs/addons/merlin-ci/config"
+IOT_CONFIG_FILE="${IOT_CONFIG_DIR}/iot_devices.conf"
+IOT_EXCLUDE_FILE="${IOT_CONFIG_DIR}/iot_exclude.conf"
 
 [ -z "$COLOR_RESET" ] && {
     ESC="$(printf '\033')"
     COLOR_RESET="${ESC}[0m" COLOR_BOLD="${ESC}[1m" COLOR_DIM="${ESC}[2m"
     COLOR_RED="${ESC}[31m" COLOR_GREEN="${ESC}[32m" COLOR_YELLOW="${ESC}[33m"
     COLOR_BLUE="${ESC}[34m" COLOR_MAGENTA="${ESC}[35m" COLOR_CYAN="${ESC}[36m"
+}
+
+_get_device_mac() {
+    local target_ip="$1"
+    local mac=""
+
+    if [ -f /proc/net/arp ]; then
+        mac="$(awk -v ip="$target_ip" '$1 == ip {print $4}' /proc/net/arp 2>/dev/null | head -n 1)"
+    fi
+    if [ -z "$mac" ] || [ "$mac" = "00:00:00:00:00:00" ]; then
+        if [ -f /var/lib/misc/dnsmasq.leases ]; then
+            mac="$(awk -v ip="$target_ip" '$3 == ip {print $2}' /var/lib/misc/dnsmasq.leases 2>/dev/null | head -n 1)"
+        fi
+    fi
+    if [ -z "$mac" ] || [ "$mac" = "00:00:00:00:00:00" ]; then
+        mac="$(ip neighbor show 2>/dev/null | awk -v ip="$target_ip" '$1 == ip {print $5}' | head -n 1)"
+    fi
+    echo "$mac" | tr 'A-Z' 'a-z'
 }
 
 _get_monitored_ips() {
@@ -63,6 +85,7 @@ _get_monitored_ips() {
 
 _get_device_name() {
     local target_ip="$1"
+    local target_mac="${2:-$(_get_device_mac "$target_ip")}"
     local dev_name=""
 
     if [ -f /var/lib/misc/dnsmasq.leases ]; then
@@ -74,11 +97,66 @@ _get_device_name() {
     fi
 
     if [ -z "$dev_name" ] || [ "$dev_name" = "*" ]; then
-        dev_name="$(nvram get custom_clientlist 2>/dev/null | tr '>' '\n' | grep -B 2 "$target_ip" | head -n 1)"
+        if [ -n "$target_mac" ]; then
+            local upper_mac
+            upper_mac="$(echo "$target_mac" | tr 'a-z' 'A-Z')"
+            dev_name="$(nvram get custom_clientlist 2>/dev/null | tr '<' '\n' | grep -i "$upper_mac" | cut -d'>' -f1 | head -n 1)"
+        fi
+    fi
+
+    if [ -z "$dev_name" ] || [ "$dev_name" = "*" ]; then
+        case "$target_ip" in
+            192.168.53.144) dev_name="Galaxy-Watch7" ;;
+        esac
+        case "$target_mac" in
+            fe:01:d0:ea:bd:c1) dev_name="Galaxy-Watch7" ;;
+        esac
     fi
 
     [ -z "$dev_name" ] || [ "$dev_name" = "*" ] && dev_name="IoT-Device"
     echo "$dev_name"
+}
+
+_is_excluded_device() {
+    local target_ip="$1"
+    local target_mac target_name
+    target_mac="$(_get_device_mac "$target_ip")"
+    target_name="$(_get_device_name "$target_ip" "$target_mac")"
+
+    local all_excludes="$DEFAULT_EXCLUDE $MCI_IOT_EXCLUDE"
+    if [ -f "$IOT_EXCLUDE_FILE" ]; then
+        all_excludes="$all_excludes $(grep -v '^[ ]*#' "$IOT_EXCLUDE_FILE" 2>/dev/null)"
+    fi
+
+    for item in $all_excludes; do
+        [ -z "$item" ] && continue
+
+        # 1. Match IP
+        if [ "$item" = "$target_ip" ]; then
+            return 0
+        fi
+
+        # 2. Match MAC (case-insensitive)
+        if [ -n "$target_mac" ]; then
+            local item_mac
+            item_mac="$(echo "$item" | tr 'A-Z' 'a-z')"
+            if [ "$item_mac" = "$target_mac" ]; then
+                return 0
+            fi
+        fi
+
+        # 3. Match Name (case-insensitive substring)
+        if [ -n "$target_name" ] && [ "$target_name" != "IoT-Device" ] && [ "$target_name" != "*" ]; then
+            local name_lower item_lower
+            name_lower="$(echo "$target_name" | tr 'A-Z' 'a-z')"
+            item_lower="$(echo "$item" | tr 'A-Z' 'a-z')"
+            case "$name_lower" in
+                *"$item_lower"*) return 0 ;;
+            esac
+        fi
+    done
+
+    return 1
 }
 
 _dispatch_user_alert() {
@@ -115,10 +193,24 @@ mci_check_trigger() {
             continue
         fi
 
-        local conns dev_name
+        local mac dev_name
+        mac="$(_get_device_mac "$ip")"
+        dev_name="$(_get_device_name "$ip" "$mac")"
+
+        # Check if device is explicitly excluded (e.g. personal smartwatch, tablet)
+        if _is_excluded_device "$ip"; then
+            # Auto-clean any lingering rate-limit rule for excluded device
+            if iptables -C FORWARD -s "$ip" -m connlimit --connlimit-above 20 -j DROP 2>/dev/null; then
+                iptables -D FORWARD -s "$ip" -m connlimit --connlimit-above 20 -j DROP 2>/dev/null || true
+            fi
+            printf "   ${COLOR_BOLD}%-16s${COLOR_RESET} (${COLOR_CYAN}%-15s${COLOR_RESET}): %s\n" \
+                "$dev_name" "$ip" "${COLOR_CYAN}[EXCLUDED - NON-IOT]${COLOR_RESET}"
+            continue
+        fi
+
+        local conns
         conns="$(grep -c "src=$ip" /proc/net/nf_conntrack 2>/dev/null)"
         conns="${conns:-0}"
-        dev_name="$(_get_device_name "$ip")"
 
         local conn_color="${COLOR_GREEN}"
         local status_badge="${COLOR_GREEN}[NORMAL]${COLOR_RESET}"
@@ -136,6 +228,11 @@ mci_check_trigger() {
         if [ "$conns" -gt "$MAX_CONNS" ]; then
             echo "$ip $conns $dev_name" >> "$ROGUE_INFO_FILE"
             rogue_found=1
+        else
+            # Auto-heal: If an old rate-limit rule exists but device returned to normal, remove it
+            if iptables -C FORWARD -s "$ip" -m connlimit --connlimit-above 20 -j DROP 2>/dev/null; then
+                iptables -D FORWARD -s "$ip" -m connlimit --connlimit-above 20 -j DROP 2>/dev/null || true
+            fi
         fi
     done
 
@@ -174,6 +271,10 @@ mci_run() {
 
     while read -r rogue_ip conns dev_name; do
         [ -z "$rogue_ip" ] && continue
+        if _is_excluded_device "$rogue_ip"; then
+            echo "--> [IOT-DEFENDER] Skipping $dev_name ($rogue_ip) - device is excluded."
+            continue
+        fi
         [ -z "$dev_name" ] && dev_name="$(_get_device_name "$rogue_ip")"
         echo "--> [IOT-DEFENDER] Containing anomaly on $dev_name ($rogue_ip, $conns connections)..."
 

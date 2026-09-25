@@ -115,6 +115,16 @@ _find_configured_swap() {
     return 1
 }
 
+_find_entware_opkg() {
+    for p in "/tmp/mnt/tamird_swap/entware/bin/opkg" /tmp/mnt/*/entware/bin/opkg; do
+        if [ -x "$p" ]; then
+            echo "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
 [ -z "$COLOR_RESET" ] && {
     ESC="$(printf '\033')"
     COLOR_RESET="${ESC}[0m" COLOR_BOLD="${ESC}[1m" COLOR_DIM="${ESC}[2m"
@@ -138,9 +148,18 @@ mci_check_trigger() {
         swap_total_kb=$(awk '/SwapTotal/ {print $2}' /proc/meminfo)
     fi
 
-    # If swap is active and Total > 0, swap is healthy!
+    # 3. Check Entware mount health (/tmp/opt -> /opt/bin/opkg)
+    local entware_opkg
+    entware_opkg="$(_find_entware_opkg)"
+    if [ -n "$entware_opkg" ] && [ ! -x "/opt/bin/opkg" ]; then
+        printf "--> ${COLOR_YELLOW}[SWAP-CHECK]${COLOR_RESET} Warning: Entware /opt mount is unlinked or degraded!\n"
+        printf "${COLOR_YELLOW}${COLOR_BOLD}--> [TRIGGERED]${COLOR_RESET} ${COLOR_RED}${COLOR_BOLD}Entware storage found at %s but /opt/bin/opkg is missing!${COLOR_RESET}\n" "$entware_opkg"
+        return 0
+    fi
+
+    # If swap is active and Total > 0 (and Entware verified), swap is healthy!
     if [ "$active_swaps" -gt 0 ] && [ "${swap_total_kb:-0}" -gt 0 ]; then
-        printf "${COLOR_GREEN}--> [SWAP-CHECK]${COLOR_RESET} Swap is active (${COLOR_GREEN}%s kB${COLOR_RESET} total). ${COLOR_GREEN}${COLOR_BOLD}[ALL CLEAR]${COLOR_RESET}\n" "$swap_total_kb"
+        printf "${COLOR_GREEN}--> [SWAP-CHECK]${COLOR_RESET} Swap and Entware are active (${COLOR_GREEN}%s kB${COLOR_RESET} swap total). ${COLOR_GREEN}${COLOR_BOLD}[ALL CLEAR]${COLOR_RESET}\n" "$swap_total_kb"
         return 1
     fi
 
@@ -193,6 +212,34 @@ mci_run() {
     _fix_ghost_mounts || true
     _recover_unmounted_drive || true
 
+    # Step 2: Entware Mount Self-Healing (/tmp/opt -> /opt/bin/opkg)
+    local entware_opkg
+    entware_opkg="$(_find_entware_opkg)"
+    if [ -n "$entware_opkg" ] && [ ! -x "/opt/bin/opkg" ]; then
+        local entware_base="${entware_opkg%/bin/opkg}"
+        local usb_mnt="${entware_base%/entware}"
+        echo "--> [RUN] Healing Entware mount link: $entware_base -> /tmp/opt..."
+        ln -nsf "$entware_base" /tmp/opt
+        if [ -x "/opt/etc/init.d/rc.unslung" ]; then
+            echo "--> [RUN] Starting Entware system daemons..."
+            /opt/etc/init.d/rc.unslung start 2>/dev/null || true
+        fi
+        if [ -x "/jffs/scripts/post-mount" ] && [ -n "$usb_mnt" ]; then
+            echo "--> [RUN] Registering telemetry crons via post-mount $usb_mnt..."
+            /jffs/scripts/post-mount "$usb_mnt" 2>/dev/null || true
+        fi
+    fi
+
+    # Step 3: Swap Self-Healing (Skip if swap is already active)
+    local active_swaps=0
+    [ -f /proc/swaps ] && active_swaps=$(awk 'NR>1 {count++} END {print count+0}' /proc/swaps)
+    local swap_total_kb=0
+    [ -f /proc/meminfo ] && swap_total_kb=$(awk '/SwapTotal/ {print $2}' /proc/meminfo)
+    if [ "$active_swaps" -gt 0 ] && [ "${swap_total_kb:-0}" -gt 0 ]; then
+        echo "--> [RUN] Swap is already active (${swap_total_kb} kB). Preserving active swap."
+        return 0
+    fi
+
     local swap_file="${TARGET_SWAP_FILE:-$(_find_configured_swap)}"
 
     if [ -z "$swap_file" ] || [ ! -f "$swap_file" ]; then
@@ -206,7 +253,7 @@ mci_run() {
     local swap_dir
     swap_dir="$(dirname "$swap_file")"
 
-    # Step 2: Check if USB mount is mounted Read-Only (common reason swap fails on Asus routers)
+    # Step 4: Check if USB mount is mounted Read-Only (common reason swap fails on Asus routers)
     echo "--> [RUN] Testing USB filesystem write permissions..."
     local rw_test="${swap_dir}/.mci_rw_test_$$"
     if ! touch "$rw_test" 2>/dev/null; then
@@ -285,7 +332,18 @@ mci_verify() {
     fi
     echo "   [PASS] Memory swap stats: Total ${total_swap} kB (Free: ${free_swap} kB)"
 
-    echo "--> [VERIFY] USB Swap successfully repaired and operational!"
+    # Check 3: Verify Entware /opt mount if installed on attached storage
+    local entware_opkg
+    entware_opkg="$(_find_entware_opkg)"
+    if [ -n "$entware_opkg" ]; then
+        if [ ! -x "/opt/bin/opkg" ]; then
+            echo "--> [FAIL] /opt/bin/opkg is still not accessible!"
+            return 1
+        fi
+        echo "   [PASS] Entware /opt mount verified (/opt/bin/opkg accessible)."
+    fi
+
+    echo "--> [VERIFY] USB Storage and Swap successfully verified and operational!"
     return 0
 }
 
