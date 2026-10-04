@@ -671,6 +671,7 @@ cli_main() {
                     [ -z "$jtype" ] && jtype="daily"
                     local tier_badge="${COLOR_CYAN}[WATCHDOG]${COLOR_RESET}"
                     [ "$jtype" = "daily" ] && tier_badge="${COLOR_BLUE}[DAILY]${COLOR_RESET}"
+                    [ "$jtype" = "both" ] && tier_badge="${COLOR_MAGENTA}[HYBRID]${COLOR_RESET}"
                     local desc
                     desc="$(grep -E '^JOB_DESCRIPTION=' "$jf" | head -n 1 | cut -d= -f2- | tr -d '"' | tr -d "'" | sed 's/^[[:space:]]*//' || echo "$name")"
                     local status_badge="${COLOR_GREEN}[ENABLED]${COLOR_RESET}"

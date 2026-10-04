@@ -22,7 +22,7 @@
 JOB_NAME="amtm-general-autoupdate"
 JOB_DESCRIPTION="Master update for amtm and all amtmupdate-compliant router scripts"
 JOB_ENABLED=1
-JOB_TYPE="daily"
+JOB_TYPE="both"
 
 # Ensure router binary paths are present
 export PATH="/opt/bin:/opt/sbin:/sbin:/bin:/usr/sbin:/usr/bin:/jffs/scripts:$PATH"
@@ -279,7 +279,7 @@ mci_check_trigger() {
 
     local check_source=""
 
-    # Check 1: Check existing persistent AMTM updates file
+    # Check 1: Check existing persistent AMTM updates file (< 2ms, zero network)
     if [ -s "${AMTM_ADD_DIR}/availUpd.txt" ] && grep -qiE "(\->|Update=)" "${AMTM_ADD_DIR}/availUpd.txt" 2>/dev/null; then
         check_source="${AMTM_ADD_DIR}/availUpd.txt"
     elif [ -s "/tmp/availUpd.txt" ] && grep -qiE "(\->|Update=)" "/tmp/availUpd.txt" 2>/dev/null; then
@@ -288,14 +288,24 @@ mci_check_trigger() {
         check_source="$TPU_CHECK_FILE"
     fi
 
-    # Check 2: If no cached update file exists, actively invoke AMTM's native updcheck
-    if [ -z "$check_source" ]; then
+    # Check 2: Proactive periodic update check with rate limiting (every 6 hours / 21600s)
+    # Never run heavy 35s network queries on every 15-minute watchdog tick!
+    local last_check_file="/tmp/mci_amtm_last_active_check"
+    local now_epoch
+    now_epoch="$(date +%s 2>/dev/null || echo 0)"
+    local last_check_epoch=0
+    [ -f "$last_check_file" ] && last_check_epoch="$(cat "$last_check_file" 2>/dev/null || echo 0)"
+    local elapsed=$((now_epoch - last_check_epoch))
+
+    if [ -z "$check_source" ] && [ "$elapsed" -ge 21600 ]; then
         local amtm_bin
         amtm_bin="$(_find_amtm_bin)"
         if [ -n "$amtm_bin" ] && [ -x "$amtm_bin" ]; then
-            printf "    ${COLOR_DIM}Running native 'amtm updcheck' across registered scripts...${COLOR_RESET}\n"
+            printf "    ${COLOR_DIM}Running periodic proactive AMTM update check (6h cooldown)...${COLOR_RESET}\n"
+            echo "$now_epoch" > "$last_check_file"
             touch /tmp/amtm-no-delete
-            "$amtm_bin" updcheck < /dev/null >/dev/null 2>&1
+            # Use non-interactive 'tpu' check
+            "$amtm_bin" tpu >/dev/null 2>&1
             rm -f /tmp/amtm-no-delete
 
             if [ -s "${AMTM_ADD_DIR}/availUpd.txt" ] && grep -qiE "(\->|Update=)" "${AMTM_ADD_DIR}/availUpd.txt" 2>/dev/null; then
@@ -308,8 +318,8 @@ mci_check_trigger() {
         fi
     fi
 
-    # Check 3: Check Wireless_Report directly as fallback if not caught above
-    if [ -z "$check_source" ]; then
+    # Check 3: Check Wireless_Report directly as fallback if due for active check
+    if [ -z "$check_source" ] && [ "$elapsed" -ge 21600 ]; then
         local wr_path
         wr_path="$(_resolve_script_path "Wireless_Report")"
         if [ -n "$wr_path" ] && [ -f "$wr_path" ]; then
@@ -337,6 +347,7 @@ mci_check_trigger() {
             case "$raw_line" in
                 *"No script updates available"*) continue ;;
                 *"Available script updates"*) continue ;;
+                *MD5=*|*md5=*) continue ;;
             esac
 
             local sname="" old_v="installed" new_v="latest"

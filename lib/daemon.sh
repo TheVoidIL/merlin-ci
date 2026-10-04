@@ -45,15 +45,16 @@ daemon_check_all_jobs() {
             jtype="$(grep -m1 -E '^JOB_TYPE=' "$job" 2>/dev/null | cut -d= -f2 | tr -d '"'\'' ' || echo "daily")"
             [ -z "$jtype" ] && jtype="daily"
 
-            if [ "$filter_type" = "watchdog" ] && [ "$jtype" != "watchdog" ]; then
+            if [ "$filter_type" = "watchdog" ] && [ "$jtype" != "watchdog" ] && [ "$jtype" != "both" ]; then
                 continue
             fi
-            if [ "$filter_type" = "daily" ] && [ "$jtype" = "watchdog" ]; then
+            if [ "$filter_type" = "daily" ] && [ "$jtype" != "daily" ] && [ "$jtype" != "both" ]; then
                 continue
             fi
 
             local tier_badge="${COLOR_CYAN}[WATCHDOG]${COLOR_RESET}"
             [ "$jtype" = "daily" ] && tier_badge="${COLOR_BLUE}[DAILY]${COLOR_RESET}"
+            [ "$jtype" = "both" ] && tier_badge="${COLOR_MAGENTA}[HYBRID]${COLOR_RESET}"
 
             printf "\n${COLOR_CYAN}-->${COLOR_RESET} Scanning job: ${COLOR_BOLD}${COLOR_MAGENTA}%-26s${COLOR_RESET} %s\n" "$job_name" "$tier_badge"
 

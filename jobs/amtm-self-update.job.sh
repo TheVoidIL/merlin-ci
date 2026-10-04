@@ -24,7 +24,7 @@
 JOB_NAME="amtm-self-update"
 JOB_DESCRIPTION="AMTM Core Updater: updates the Asuswrt-Merlin Terminal Menu (amtm) management script itself"
 JOB_ENABLED=1
-JOB_TYPE="daily"
+JOB_TYPE="both"
 
 # Ensure standard binary paths
 export PATH="/opt/bin:/opt/sbin:/sbin:/bin:/usr/sbin:/usr/bin:/jffs/scripts:$PATH"
@@ -117,16 +117,26 @@ mci_check_trigger() {
         return 0
     fi
 
-    # Check 2: Compare local revision against upstream repository directly
-    local local_rev
-    local_rev="$(grep -m1 -E "^[[:space:]]*amtmRev=[0-9]+" "$active_bin" 2>/dev/null | grep -oE '[0-9]+' | head -n 1)"
-    if [ -n "$local_rev" ]; then
-        local remote_rev
-        remote_rev="$(curl -sL --retry 2 --connect-timeout 5 "$UPSTREAM_AMTM_URL" 2>/dev/null | grep -m1 -E "^[[:space:]]*amtmRev=[0-9]+" | grep -oE '[0-9]+' | head -n 1)"
-        if [ -n "$remote_rev" ] && [ "$remote_rev" -gt "$local_rev" ]; then
-            MCI_NEW_VERSION="rev ${remote_rev}"
-            printf "${COLOR_YELLOW}${COLOR_BOLD}--> [TRIGGERED]${COLOR_RESET} ${COLOR_YELLOW}Newer AMTM core revision available upstream (${COLOR_YELLOW}%s${COLOR_RESET} -> ${COLOR_GREEN}%s${COLOR_RESET})!${COLOR_RESET}\n" "$cur_ver" "$MCI_NEW_VERSION"
-            return 0
+    # Check 2: Compare local revision against upstream repository directly (rate-limited to 6h cooldown)
+    local last_check_file="/tmp/mci_amtm_core_last_check"
+    local now_epoch
+    now_epoch="$(date +%s 2>/dev/null || echo 0)"
+    local last_check_epoch=0
+    [ -f "$last_check_file" ] && last_check_epoch="$(cat "$last_check_file" 2>/dev/null || echo 0)"
+    local elapsed=$((now_epoch - last_check_epoch))
+
+    if [ "$elapsed" -ge 21600 ]; then
+        echo "$now_epoch" > "$last_check_file"
+        local local_rev
+        local_rev="$(grep -m1 -E "^[[:space:]]*amtmRev=[0-9]+" "$active_bin" 2>/dev/null | grep -oE '[0-9]+' | head -n 1)"
+        if [ -n "$local_rev" ]; then
+            local remote_rev
+            remote_rev="$(curl -sL --retry 2 --connect-timeout 5 "$UPSTREAM_AMTM_URL" 2>/dev/null | grep -m1 -E "^[[:space:]]*amtmRev=[0-9]+" | grep -oE '[0-9]+' | head -n 1)"
+            if [ -n "$remote_rev" ] && [ "$remote_rev" -gt "$local_rev" ]; then
+                MCI_NEW_VERSION="rev ${remote_rev}"
+                printf "${COLOR_YELLOW}${COLOR_BOLD}--> [TRIGGERED]${COLOR_RESET} ${COLOR_YELLOW}Newer AMTM core revision available upstream (${COLOR_YELLOW}%s${COLOR_RESET} -> ${COLOR_GREEN}%s${COLOR_RESET})!${COLOR_RESET}\n" "$cur_ver" "$MCI_NEW_VERSION"
+                return 0
+            fi
         fi
     fi
 

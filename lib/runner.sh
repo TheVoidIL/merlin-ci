@@ -299,13 +299,21 @@ _finish_job() {
         is_healing_event=1
     fi
 
+    # An upgrade event occurs when a job successfully upgraded software or script versions
+    local is_upgrade_event=0
+    if [ "$status" = "SUCCESS" ] && [ -n "$MCI_NEW_VERSION" ] && [ "$MCI_NEW_VERSION" != "N/A" ] && [ "$MCI_NEW_VERSION" != "latest" ] && [ "$MCI_NEW_VERSION" != "$MCI_OLD_VERSION" ]; then
+        is_upgrade_event=1
+    fi
+
     # Record run in 24-hour activity log for morning daily digest aggregation
     local daily_log="${MCI_LOG_DIR}/daily_activity.log"
     mkdir -p "$(dirname "$daily_log")" 2>/dev/null || true
     local now_time
     now_time="$(date '+%H:%M:%S' 2>/dev/null || date)"
     if [ "$status" = "SUCCESS" ]; then
-        if [ "$is_healing_event" = "1" ]; then
+        if [ "$is_upgrade_event" = "1" ]; then
+            printf "[%s] [UPGRADE] %s (%s -> %s, Completed in %ss)\n" "$now_time" "$name" "${MCI_OLD_VERSION:-installed}" "$MCI_NEW_VERSION" "$duration" >> "$daily_log" 2>/dev/null || true
+        elif [ "$is_healing_event" = "1" ]; then
             printf "[%s] [HEALED] %s (Auto-repaired in %ss)\n" "$now_time" "$name" "$duration" >> "$daily_log" 2>/dev/null || true
         else
             printf "[%s] [PASS] %s (Completed in %ss)\n" "$now_time" "$name" "$duration" >> "$daily_log" 2>/dev/null || true
@@ -328,13 +336,14 @@ _finish_job() {
         return 0
     fi
 
-    # 2. Watchdog Needed Healing: ALWAYS dispatch immediate alert email
-    if [ "$is_healing_event" = "1" ]; then
-        if [ "${MCI_NOTIFY_ON_HEAL:-1}" = "1" ]; then
-            local log_summary
-            log_summary="$(tail -n 60 "$final_log" 2>/dev/null)"
-            notify_dispatch "HEALED" "$name" "$duration" "$log_summary" "$MCI_OLD_VERSION" "$MCI_NEW_VERSION"
-        fi
+    # 2. Watchdog Needed Healing OR Version Upgraded: ALWAYS dispatch immediate alert email
+    if [ "$is_healing_event" = "1" ] || [ "$is_upgrade_event" = "1" ]; then
+        local alert_type="HEALED"
+        [ "$is_upgrade_event" = "1" ] && alert_type="SUCCESS"
+
+        local log_summary
+        log_summary="$(tail -n 60 "$final_log" 2>/dev/null)"
+        notify_dispatch "$alert_type" "$name" "$duration" "$log_summary" "$MCI_OLD_VERSION" "$MCI_NEW_VERSION"
         return 0
     fi
 
