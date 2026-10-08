@@ -117,10 +117,15 @@ mci_backup() {
 mci_run() {
     echo "--> [RUN] Starting storage self-healing pipeline..."
 
-    # Step 0: Restore any offline SCSI devices to running state
+    # Step 0: Restore any offline SCSI devices to running state & enforce UAS quirks
+    [ -f /sys/module/usb_storage/parameters/quirks ] && grep -qv "0bda:9201" /sys/module/usb_storage/parameters/quirks 2>/dev/null && \
+        echo "0bda:9201:u" > /sys/module/usb_storage/parameters/quirks 2>/dev/null || true
+
     local offline_devs
     offline_devs="$(_find_offline_scsi_devices)"
     if [ -n "$offline_devs" ]; then
+        # Pause media server immediately to break any runaway I/O retry loops
+        killall -STOP minidlna 2>/dev/null || true
         for state_file in $offline_devs; do
             local disk
             disk=$(echo "$state_file" | awk -F'/' '{print $4}')
@@ -128,7 +133,7 @@ mci_run() {
             echo running > "$state_file" 2>/dev/null || true
             sleep 1
         done
-        # Restart media server to release any broken file descriptors on offlined drives
+        # Restart media server cleanly to re-index on healthy mounts
         if [ -x "/usr/sbin/minidlna" ] || which minidlna >/dev/null 2>&1; then
             service restart_dms >/dev/null 2>&1 || true
         fi
