@@ -22,7 +22,13 @@ _check_core_firewall() {
 
 _check_skynet_rules() {
     local skynet_script="/jffs/scripts/firewall"
-    local skynet_cfg="/jffs/addons/skynet/skynet.cfg"
+    local skynet_cfg=""
+    for cfg in /tmp/mnt/*/skynet/skynet.cfg /tmp/mnt/*/*/skynet/skynet.cfg /jffs/addons/skynet/skynet.cfg; do
+        if [ -f "$cfg" ]; then
+            skynet_cfg="$cfg"
+            break
+        fi
+    done
 
     # Check if Skynet script exists
     if [ ! -f "$skynet_script" ] || ! grep -qi "skynet" "$skynet_script" 2>/dev/null; then
@@ -30,8 +36,8 @@ _check_skynet_rules() {
     fi
 
     # Verify if Skynet is actually configured
-    if [ ! -f "$skynet_cfg" ]; then
-        echo "--> [AUDIT] Skynet config ($skynet_cfg) not found. Skynet is unconfigured. Skipping."
+    if [ -z "$skynet_cfg" ] || [ ! -f "$skynet_cfg" ]; then
+        echo "--> [AUDIT] Skynet config not found on storage. Skynet is unconfigured. Skipping."
         return 0
     fi
 
@@ -43,7 +49,7 @@ _check_skynet_rules() {
 
     # Skynet is configured and enabled: verify active filtering in kernel
     local ipset_active=0
-    if command -v ipset >/dev/null 2>&1; then
+    if which ipset >/dev/null 2>&1; then
         if ipset list Skynet-Master >/dev/null 2>&1 || \
            ipset -n list 2>/dev/null | grep -qi "skynet" || \
            ipset list -n 2>/dev/null | grep -qi "skynet" || \
@@ -54,7 +60,7 @@ _check_skynet_rules() {
 
     # Check netfilter tables (raw, filter, mangle) using verbose/specification output
     local rule_found=0
-    if command -v iptables >/dev/null 2>&1; then
+    if which iptables >/dev/null 2>&1; then
         if iptables -S 2>/dev/null | grep -qi "skynet" || \
            iptables -t raw -S 2>/dev/null | grep -qi "skynet" || \
            iptables -v -L -n 2>/dev/null | grep -qi "skynet" || \
@@ -104,7 +110,7 @@ mci_backup() {
     mkdir -p "$backup_dir" 2>/dev/null || true
 
     iptables-save > "$backup_dir/iptables_before.save" 2>/dev/null || true
-    if command -v ip6tables-save >/dev/null 2>&1; then
+    if which ip6tables-save >/dev/null 2>&1; then
         ip6tables-save > "$backup_dir/ip6tables_before.save" 2>/dev/null || true
     fi
 

@@ -102,6 +102,8 @@ runner_execute_job() {
     JOB_DESCRIPTION=""
     JOB_ENABLED=1
     JOB_TYPE="daily"
+    JOB_NOTIFY_SUCCESS=""
+    JOB_NOTIFY_HEALED=""
     MCI_OLD_VERSION=""
     MCI_NEW_VERSION=""
     unset -f mci_check_trigger mci_backup mci_run mci_verify mci_rollback mci_notify 2>/dev/null || true
@@ -338,6 +340,9 @@ _finish_job() {
 
     # 2. Watchdog Needed Healing OR Version Upgraded: ALWAYS dispatch immediate alert email
     if [ "$is_healing_event" = "1" ] || [ "$is_upgrade_event" = "1" ]; then
+        if [ "$is_healing_event" = "1" ] && [ "${JOB_NOTIFY_HEALED:-1}" = "0" ]; then
+            return 0
+        fi
         local alert_type="HEALED"
         [ "$is_upgrade_event" = "1" ] && alert_type="SUCCESS"
 

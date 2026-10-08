@@ -39,6 +39,14 @@ _is_partition_ro() {
     return 1
 }
 
+_find_offline_scsi_devices() {
+    for state_file in /sys/block/sd*/device/state; do
+        if [ -f "$state_file" ] && [ "$(cat "$state_file" 2>/dev/null)" = "offline" ]; then
+            echo "$state_file"
+        fi
+    done
+}
+
 [ -z "$COLOR_RESET" ] && {
     ESC="$(printf '\033')"
     COLOR_RESET="${ESC}[0m" COLOR_BOLD="${ESC}[1m" COLOR_DIM="${ESC}[2m"
@@ -47,8 +55,21 @@ _is_partition_ro() {
 }
 
 mci_check_trigger() {
-    printf "--> ${COLOR_CYAN}[STORAGE-WATCHDOG]${COLOR_RESET} Checking USB storage write status on /tmp/mnt/...\n"
+    printf "--> ${COLOR_CYAN}[STORAGE-WATCHDOG]${COLOR_RESET} Checking USB storage write status and SCSI bus on /tmp/mnt/...\n"
 
+    # 1. Check for any SCSI block device offlined by kernel error recovery
+    local offline_devs
+    offline_devs="$(_find_offline_scsi_devices)"
+    if [ -n "$offline_devs" ]; then
+        for state_file in $offline_devs; do
+            local disk
+            disk=$(echo "$state_file" | awk -F'/' '{print $4}')
+            printf "${COLOR_YELLOW}${COLOR_BOLD}--> [TRIGGERED]${COLOR_RESET} ${COLOR_RED}${COLOR_BOLD}SCSI disk %s is OFFLINE in kernel error state!${COLOR_RESET}\n" "$disk"
+        done
+        return 0
+    fi
+
+    # 2. Check for mounted partitions stuck in Read-Only
     local mounts
     mounts="$(_find_usb_mounts)"
 
@@ -71,13 +92,13 @@ mci_check_trigger() {
         return 0
     fi
 
-    # Also check dmesg for recent ext4 I/O or Remounting read-only errors
-    if dmesg | tail -n 40 | grep -qiE "Remounting filesystem read-only|EXT4-fs error"; then
-        printf "${COLOR_YELLOW}${COLOR_BOLD}--> [TRIGGERED]${COLOR_RESET} ${COLOR_RED}${COLOR_BOLD}Recent ext4 filesystem errors detected in dmesg!${COLOR_RESET}\n"
+    # 3. Check dmesg for recent ext4 I/O or rejecting I/O errors
+    if dmesg | tail -n 40 | grep -qiE "Remounting filesystem read-only|EXT4-fs error|rejecting I/O to offline device"; then
+        printf "${COLOR_YELLOW}${COLOR_BOLD}--> [TRIGGERED]${COLOR_RESET} ${COLOR_RED}${COLOR_BOLD}Recent ext4 filesystem or SCSI offline errors detected in dmesg!${COLOR_RESET}\n"
         return 0
     fi
 
-    printf "${COLOR_GREEN}--> [STORAGE-WATCHDOG]${COLOR_RESET} All attached USB storage mounts are Read-Write. ${COLOR_GREEN}${COLOR_BOLD}[ALL CLEAR]${COLOR_RESET}\n"
+    printf "${COLOR_GREEN}--> [STORAGE-WATCHDOG]${COLOR_RESET} All attached USB storage mounts are Read-Write and healthy. ${COLOR_GREEN}${COLOR_BOLD}[ALL CLEAR]${COLOR_RESET}\n"
     return 1
 }
 
@@ -95,6 +116,23 @@ mci_backup() {
 
 mci_run() {
     echo "--> [RUN] Starting storage self-healing pipeline..."
+
+    # Step 0: Restore any offline SCSI devices to running state
+    local offline_devs
+    offline_devs="$(_find_offline_scsi_devices)"
+    if [ -n "$offline_devs" ]; then
+        for state_file in $offline_devs; do
+            local disk
+            disk=$(echo "$state_file" | awk -F'/' '{print $4}')
+            echo "--> [HEAL: STEP 0] Restoring SCSI disk $disk from offline to running..."
+            echo running > "$state_file" 2>/dev/null || true
+            sleep 1
+        done
+        # Restart media server to release any broken file descriptors on offlined drives
+        if [ -x "/usr/sbin/minidlna" ] || which minidlna >/dev/null 2>&1; then
+            service restart_dms >/dev/null 2>&1 || true
+        fi
+    fi
 
     local target_mnt="${TARGET_RO_MOUNT}"
     if [ -z "$target_mnt" ]; then
@@ -133,10 +171,19 @@ mci_run() {
         # Stop background disk writing services safely
         swapoff -a 2>/dev/null || true
 
-        if command -v fsck.ext4 >/dev/null 2>&1; then
-            fsck.ext4 -pv "$dev" 2>&1 || true
-        elif command -v e2fsck >/dev/null 2>&1; then
-            e2fsck -pv "$dev" 2>&1 || true
+        local fsck_bin=""
+        if which e2fsck >/dev/null 2>&1; then
+            fsck_bin="$(which e2fsck)"
+        elif [ -x "/usr/sbin/e2fsck" ]; then
+            fsck_bin="/usr/sbin/e2fsck"
+        elif which fsck.ext4 >/dev/null 2>&1; then
+            fsck_bin="$(which fsck.ext4)"
+        elif [ -x "/sbin/fsck.ext4" ]; then
+            fsck_bin="/sbin/fsck.ext4"
+        fi
+
+        if [ -n "$fsck_bin" ]; then
+            "$fsck_bin" -pv "$dev" 2>&1 || true
         fi
 
         # Remount rw

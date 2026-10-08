@@ -41,6 +41,7 @@ d:\CICD_Asus / /jffs/addons/merlin-ci/
 │   ├── firewall-leak-audit.job.sh
 │   ├── iot-anomaly-contain.job.sh
 │   ├── letsencrypt-cert-watchdog.job.sh
+│   ├── mlo-storm-watchdog.job.sh
 │   ├── new-device-watchdog.job.sh
 │   ├── nvram-jffs-vault.job.sh
 │   ├── ram-oom-heal.job.sh
@@ -66,6 +67,7 @@ d:\CICD_Asus / /jffs/addons/merlin-ci/
 | `amtm-general-autoupdate` | **Master Addon CI** | `amtm updcheck` detects 3rd-party script releases | Targeted `amtmupdate` on outdated scripts | Validates script syntax (`sh -n`), checks `dnsmasq` & `httpd`; auto-rollbacks `/jffs/scripts/` |
 | `amtm-self-update` | **AMTM Core CI** | New amtm version available | Updates `/jffs/scripts/amtm` silently | Syntax verification; restores active backup on error |
 | `entware-autoupdate` | **Package CI** | `opkg list-upgradable` returns packages | Upgrades packages, backs up `/opt/etc/` | Checks opkg db and binary execution; restores configs |
+| `mlo-storm-watchdog` | **Self-Healing** | Wi-Fi 7 MLO association storm loops or Trend Micro DPI UDB table collision floods | Deauthenticates flapping STA (`wl deauth`), reloads WRS/wireless, flushes caches | Verifies DNS resolution, WAN ping & 5 GHz radio health |
 | `wan-gateway-watchdog` | **Self-Healing** | Gateway/internet drops while WAN interface is linked | Soft DHCP lease refresh (`udhcpc`) or `service restart_wan` | Verifies multi-target external ping & public DNS |
 | `dns-unresponsive-heal` | **Self-Healing** | `dnsmasq` deadlocks or local queries fail | Flushes cache, restarts `dnsmasq` | Local query benchmark (< 25ms); restores config |
 | `usb-swap-repair` | **Self-Healing** | Swap inactive in `/proc/swaps` or ghost mounts exist | Clears ghost mounts, runs `mkswap` & `swapon` | Verifies `/proc/swaps` and `SwapTotal > 0` |
