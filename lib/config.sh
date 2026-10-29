@@ -85,6 +85,9 @@ config_set_defaults() {
     MCI_DISCORD_WEBHOOK_URL="${MCI_DISCORD_WEBHOOK_URL:-}"
     MCI_TELEGRAM_BOT_TOKEN="${MCI_TELEGRAM_BOT_TOKEN:-}"
     MCI_TELEGRAM_CHAT_ID="${MCI_TELEGRAM_CHAT_ID:-}"
+
+    # AMTM Auto-Update Guardrails
+    MCI_EXCLUDE_SCRIPTS="${MCI_EXCLUDE_SCRIPTS:-amtm MerlinAU merlinau}"
 }
 
 config_load() {

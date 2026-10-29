@@ -11,7 +11,11 @@
 JOB_NAME="mlo-storm-watchdog"
 JOB_DESCRIPTION="Self-healing watchdog: detects Wi-Fi 7 MLO deauth storms & Trend Micro UDB ioctl faults to prevent kernel deadlock"
 JOB_ENABLED=1
-JOB_TYPE="watchdog"
+# Tier 0 (fast): evaluated every 2 min via MCI_Fast cron. A storm can escalate to a
+# kernel/IO stall and WAN (PPPoE LCP) drop within ~15 min, so the 15-min tier is too slow.
+JOB_TYPE="fast"
+# The storm itself drives load up; never defer this job on the CPU load guard.
+JOB_BYPASS_LOAD_GUARD=1
 
 # Thresholds
 MLO_LOOP_THRESHOLD=5       # Trigger if >= 5 MLO assoc failures in window

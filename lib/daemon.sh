@@ -5,6 +5,7 @@
 
 MCI_PID_FILE="/tmp/merlin-ci.pid"
 MCI_DAEMON_LOG="${MCI_LOG_DIR:-/tmp/merlin-ci/logs}/daemon.log"
+MCI_CRON_FAST_TAG="MCI_Fast"
 MCI_CRON_WATCHDOG_TAG="MCI_Watchdog"
 MCI_CRON_DAILY_TAG="MCI_Daily"
 MCI_CRON_LEGACY_TAG="MerlinCI"
@@ -23,6 +24,7 @@ daemon_check_all_jobs() {
 
     local banner_label="All Jobs"
     case "$filter_type" in
+        fast) banner_label="Tier 0: Fast Critical Watchdogs" ;;
         watchdog) banner_label="Tier 1: Watchdogs & Self-Healing" ;;
         daily|maintenance) banner_label="Tier 2: Daily Maintenance & Upgrades" ;;
     esac
@@ -51,8 +53,12 @@ daemon_check_all_jobs() {
             if [ "$filter_type" = "daily" ] && [ "$jtype" != "daily" ] && [ "$jtype" != "both" ]; then
                 continue
             fi
+            if [ "$filter_type" = "fast" ] && [ "$jtype" != "fast" ]; then
+                continue
+            fi
 
             local tier_badge="${COLOR_CYAN}[WATCHDOG]${COLOR_RESET}"
+            [ "$jtype" = "fast" ] && tier_badge="${COLOR_RED}[FAST]${COLOR_RESET}"
             [ "$jtype" = "daily" ] && tier_badge="${COLOR_BLUE}[DAILY]${COLOR_RESET}"
             [ "$jtype" = "both" ] && tier_badge="${COLOR_MAGENTA}[HYBRID]${COLOR_RESET}"
 
@@ -88,6 +94,7 @@ _get_cru() {
 daemon_setup_cron() {
     local watchdog_sched="${1:-*/15 * * * *}" # Default: Every 15 minutes
     local daily_sched="${2:-0 4 * * *}"       # Default: Daily at 4:00 AM
+    local fast_sched="${3:-${MCI_FAST_SCHED:-*/2 * * * *}}" # Default: Every 2 minutes
     local exec_bin="/jffs/scripts/mci"
     [ ! -x "$exec_bin" ] && exec_bin="$(pwd)/merlin-ci.sh"
 
@@ -99,6 +106,10 @@ daemon_setup_cron() {
         # Remove legacy single cron tags if present
         "$cru_bin" d "$MCI_CRON_LEGACY_TAG" 2>/dev/null || true
         "$cru_bin" d "MerlinCI_SwapWatch" 2>/dev/null || true
+
+        # Tier 0: Fast Critical Watchdogs (Wi-Fi driver storms that can stall the kernel)
+        echo "--> [CRON] Registering Tier 0: Fast Critical Watchdogs ($fast_sched)..."
+        "$cru_bin" a "$MCI_CRON_FAST_TAG" "$fast_sched $exec_bin check fast >/dev/null 2>&1"
 
         # Tier 1: Fast Watchdogs (WAN, DNS, Swap, Storage, SSH)
         echo "--> [CRON] Registering Tier 1: Watchdogs ($watchdog_sched)..."
@@ -112,6 +123,7 @@ daemon_setup_cron() {
         "$cru_bin" l | grep -E "MCI_" || true
     else
         echo "--> [WARNING] 'cru' command not found. Add these to your system crontab:"
+        echo "    $fast_sched $exec_bin check fast"
         echo "    $watchdog_sched $exec_bin check watchdog"
         echo "    $daily_sched $exec_bin check daily"
     fi
@@ -122,6 +134,7 @@ daemon_remove_cron() {
     cru_bin="$(_get_cru 2>/dev/null || true)"
     if [ -n "$cru_bin" ]; then
         echo "--> [CRON] Removing Merlin-CI schedules from Asuswrt-Merlin 'cru'..."
+        "$cru_bin" d "$MCI_CRON_FAST_TAG" 2>/dev/null || true
         "$cru_bin" d "$MCI_CRON_WATCHDOG_TAG" 2>/dev/null || true
         "$cru_bin" d "$MCI_CRON_DAILY_TAG" 2>/dev/null || true
         "$cru_bin" d "$MCI_CRON_LEGACY_TAG" 2>/dev/null || true
@@ -134,12 +147,16 @@ daemon_cron_status() {
     local cru_bin
     cru_bin="$(_get_cru 2>/dev/null || true)"
     if [ -n "$cru_bin" ]; then
-        local w_entry d_entry l_entry
+        local w_entry d_entry l_entry f_entry
+        f_entry="$($cru_bin l 2>/dev/null | grep "$MCI_CRON_FAST_TAG" || true)"
         w_entry="$($cru_bin l 2>/dev/null | grep "$MCI_CRON_WATCHDOG_TAG" || true)"
         d_entry="$($cru_bin l 2>/dev/null | grep "$MCI_CRON_DAILY_TAG" || true)"
         l_entry="$($cru_bin l 2>/dev/null | grep "$MCI_CRON_LEGACY_TAG" || true)"
 
-        if [ -n "$w_entry" ] && [ -n "$d_entry" ]; then
+        if [ -n "$f_entry" ] && [ -n "$w_entry" ] && [ -n "$d_entry" ]; then
+            printf "Tiered Active (Fast + Watchdogs + Daily)"
+            return 0
+        elif [ -n "$w_entry" ] && [ -n "$d_entry" ]; then
             printf "Tiered Active (Watchdogs + Daily)"
             return 0
         elif [ -n "$w_entry" ] || [ -n "$d_entry" ] || [ -n "$l_entry" ]; then

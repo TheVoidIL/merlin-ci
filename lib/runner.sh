@@ -5,12 +5,18 @@
 # ==============================================================================
 
 # --- Resource Guardrail Checks ---
+# Arg 1 (optional): "1" to skip the CPU load check. Used by emergency self-healing
+# jobs (JOB_BYPASS_LOAD_GUARD=1) whose failure condition itself drives load up,
+# e.g. Wi-Fi driver storms. The RAM guard is always enforced.
 runner_check_safety() {
+    local bypass_load="${1:-0}"
     local max_load="${MCI_MAX_LOADAVG:-2.50}"
     local min_ram_mb="${MCI_MIN_FREE_RAM_MB:-32}"
 
     # 1. CPU Load Average Check
-    if [ -f /proc/loadavg ]; then
+    if [ "$bypass_load" = "1" ]; then
+        echo "--> [GUARD] Load guard bypassed (critical self-healing job)."
+    elif [ -f /proc/loadavg ]; then
         local current_load_1m
         current_load_1m="$(awk '{print $1}' /proc/loadavg)"
         
@@ -104,6 +110,7 @@ runner_execute_job() {
     JOB_TYPE="daily"
     JOB_NOTIFY_SUCCESS=""
     JOB_NOTIFY_HEALED=""
+    JOB_BYPASS_LOAD_GUARD=0
     MCI_OLD_VERSION=""
     MCI_NEW_VERSION=""
     unset -f mci_check_trigger mci_backup mci_run mci_verify mci_rollback mci_notify 2>/dev/null || true
@@ -120,7 +127,7 @@ runner_execute_job() {
     fi
 
     # Safety Guardrail Check
-    if ! runner_check_safety; then
+    if ! runner_check_safety "$JOB_BYPASS_LOAD_GUARD"; then
         return 2
     fi
 

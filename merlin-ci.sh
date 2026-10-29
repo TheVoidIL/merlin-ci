@@ -626,6 +626,7 @@ cli_main() {
             for arg in "$@"; do
                 case "$arg" in
                     -f|--force) force=1 ;;
+                    fast|critical) target="fast" ;;
                     watchdog|healing) target="watchdog" ;;
                     daily|maintenance) target="daily" ;;
                     all) target="all" ;;
@@ -670,6 +671,7 @@ cli_main() {
                     jtype="$(grep -m1 -E '^JOB_TYPE=' "$jf" 2>/dev/null | cut -d= -f2 | tr -d '"'\'' ' || echo "daily")"
                     [ -z "$jtype" ] && jtype="daily"
                     local tier_badge="${COLOR_CYAN}[WATCHDOG]${COLOR_RESET}"
+                    [ "$jtype" = "fast" ] && tier_badge="${COLOR_RED}[FAST]${COLOR_RESET}"
                     [ "$jtype" = "daily" ] && tier_badge="${COLOR_BLUE}[DAILY]${COLOR_RESET}"
                     [ "$jtype" = "both" ] && tier_badge="${COLOR_MAGENTA}[HYBRID]${COLOR_RESET}"
                     local desc
@@ -691,10 +693,10 @@ cli_main() {
             ;;
         cron)
             case "$1" in
-                enable) daemon_setup_cron "${2:-*/15 * * * *}" "${3:-0 4 * * *}" ;;
+                enable) daemon_setup_cron "${2:-*/15 * * * *}" "${3:-0 4 * * *}" "$4" ;;
                 disable) daemon_remove_cron ;;
                 status) daemon_cron_status ;;
-                *) echo "Usage: merlin-ci cron [enable [watchdog_expr] [daily_expr] | disable | status]" ;;
+                *) echo "Usage: merlin-ci cron [enable [watchdog_expr] [daily_expr] [fast_expr] | disable | status]" ;;
             esac
             ;;
         logs)

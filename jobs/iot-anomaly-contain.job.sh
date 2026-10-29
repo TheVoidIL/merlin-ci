@@ -17,7 +17,7 @@ JOB_ENABLED=1
 JOB_TYPE="watchdog"
 
 DEFAULT_IOT_IPS="192.168.53.129 192.168.53.94 192.168.53.96 192.168.53.165 192.168.53.246"
-DEFAULT_EXCLUDE="192.168.53.144 fe:01:d0:ea:bd:c1 SM-L310 Galaxy-Watch7"
+DEFAULT_EXCLUDE="192.168.53.144 fe:01:d0:ea:bd:c1 SM-L310 Galaxy-Watch7 192.168.53.2 38:8c:ef:2c:3c:9e Samsung"
 IOT_SUBNET_PREFIX="${MCI_IOT_SUBNET_PREFIX:-192.168.53.}"
 MAX_CONNS="${MCI_IOT_MAX_CONNS:-20}"
 MCI_IOT_EXCLUDE="${MCI_IOT_EXCLUDE:-}"
@@ -42,9 +42,11 @@ _get_device_mac() {
         mac="$(awk -v ip="$target_ip" '$1 == ip {print $4}' /proc/net/arp 2>/dev/null | head -n 1)"
     fi
     if [ -z "$mac" ] || [ "$mac" = "00:00:00:00:00:00" ]; then
-        if [ -f /var/lib/misc/dnsmasq.leases ]; then
-            mac="$(awk -v ip="$target_ip" '$3 == ip {print $2}' /var/lib/misc/dnsmasq.leases 2>/dev/null | head -n 1)"
-        fi
+        for lf in /var/lib/misc/dnsmasq*.leases; do
+            [ -f "$lf" ] || continue
+            mac="$(awk -v ip="$target_ip" '$3 == ip {print $2}' "$lf" 2>/dev/null | head -n 1)"
+            [ -n "$mac" ] && [ "$mac" != "00:00:00:00:00:00" ] && break
+        done
     fi
     if [ -z "$mac" ] || [ "$mac" = "00:00:00:00:00:00" ]; then
         mac="$(ip neighbor show 2>/dev/null | awk -v ip="$target_ip" '$1 == ip {print $5}' | head -n 1)"
@@ -55,10 +57,11 @@ _get_device_mac() {
 _get_monitored_ips() {
     local discovered_ips=""
 
-    # 1. Discover all active DHCP leases on the IoT subnet (192.168.53.x)
-    if [ -f /var/lib/misc/dnsmasq.leases ]; then
-        discovered_ips="$discovered_ips $(awk -v pfx="$IOT_SUBNET_PREFIX" '$3 ~ "^"pfx {print $3}' /var/lib/misc/dnsmasq.leases 2>/dev/null)"
-    fi
+    # 1. Discover all active DHCP leases on the IoT subnet (192.168.53.x) across all dnsmasq lease files
+    for lf in /var/lib/misc/dnsmasq*.leases; do
+        [ -f "$lf" ] || continue
+        discovered_ips="$discovered_ips $(awk -v pfx="$IOT_SUBNET_PREFIX" '$3 ~ "^"pfx {print $3}' "$lf" 2>/dev/null)"
+    done
 
     # 2. Discover all active ARP table entries on the IoT subnet
     if [ -f /proc/net/arp ]; then
@@ -88,9 +91,11 @@ _get_device_name() {
     local target_mac="${2:-$(_get_device_mac "$target_ip")}"
     local dev_name=""
 
-    if [ -f /var/lib/misc/dnsmasq.leases ]; then
-        dev_name="$(awk -v ip="$target_ip" '$3 == ip {print $4}' /var/lib/misc/dnsmasq.leases 2>/dev/null | head -n 1)"
-    fi
+    for lf in /var/lib/misc/dnsmasq*.leases; do
+        [ -f "$lf" ] || continue
+        dev_name="$(awk -v ip="$target_ip" '$3 == ip {print $4}' "$lf" 2>/dev/null | head -n 1)"
+        [ -n "$dev_name" ] && [ "$dev_name" != "*" ] && break
+    done
 
     if [ -z "$dev_name" ] || [ "$dev_name" = "*" ]; then
         dev_name="$(grep -E "^[ ]*$target_ip[ \t]+" /etc/hosts /etc/hosts.dnsmasq 2>/dev/null | awk '{print $2}' | head -n 1)"
@@ -107,9 +112,11 @@ _get_device_name() {
     if [ -z "$dev_name" ] || [ "$dev_name" = "*" ]; then
         case "$target_ip" in
             192.168.53.144) dev_name="Galaxy-Watch7" ;;
+            192.168.53.2) dev_name="Samsung" ;;
         esac
         case "$target_mac" in
             fe:01:d0:ea:bd:c1) dev_name="Galaxy-Watch7" ;;
+            38:8c:ef:2c:3c:9e) dev_name="Samsung" ;;
         esac
     fi
 
@@ -209,7 +216,7 @@ mci_check_trigger() {
         fi
 
         local conns
-        conns="$(grep -c "src=$ip" /proc/net/nf_conntrack 2>/dev/null)"
+        conns="$(grep -c "src=$ip " /proc/net/nf_conntrack 2>/dev/null)"
         conns="${conns:-0}"
 
         local conn_color="${COLOR_GREEN}"
@@ -253,7 +260,7 @@ mci_backup() {
     if [ -f "$ROGUE_INFO_FILE" ]; then
         while read -r rogue_ip conns dev_name; do
             [ -z "$rogue_ip" ] && continue
-            grep "src=$rogue_ip" /proc/net/nf_conntrack > "$backup_dir/conntrack_${rogue_ip}.txt" 2>/dev/null || true
+            grep "src=$rogue_ip " /proc/net/nf_conntrack > "$backup_dir/conntrack_${rogue_ip}.txt" 2>/dev/null || true
         done < "$ROGUE_INFO_FILE"
     fi
 
@@ -280,7 +287,7 @@ mci_run() {
 
         # Capture top destination IPs
         local dest_summary
-        dest_summary="$(grep "src=$rogue_ip" /proc/net/nf_conntrack 2>/dev/null | \
+        dest_summary="$(grep "src=$rogue_ip " /proc/net/nf_conntrack 2>/dev/null | \
             awk '{for(i=1;i<=NF;i++) if($i ~ /^dst=/) print $i}' | sort | uniq -c | sort -nr | head -n 5)"
         echo "$rogue_ip: $dest_summary" >> "$ROGUE_DESTS_FILE"
 
@@ -300,9 +307,11 @@ mci_run() {
             fi
         fi
 
-        # Clear stale conntrack entries if conntrack binary is installed (Entware)
-        if command -v conntrack >/dev/null 2>&1; then
+        # Clear stale conntrack entries if conntrack binary is available
+        if which conntrack >/dev/null 2>&1; then
             conntrack -D -s "$rogue_ip" >/dev/null 2>&1 || true
+        elif [ -x /usr/sbin/conntrack ]; then
+            /usr/sbin/conntrack -D -s "$rogue_ip" >/dev/null 2>&1 || true
         fi
     done < "$ROGUE_INFO_FILE"
 
@@ -338,11 +347,27 @@ mci_rollback() {
 mci_notify() {
     local status="$1"
     local duration="$2"
+    local alert_cooldown=21600 # 6 hours cooldown per device
 
     if [ -f "$ROGUE_INFO_FILE" ]; then
+        local now
+        now="$(date +%s 2>/dev/null || echo 0)"
+
         while read -r rogue_ip conns dev_name; do
             [ -z "$rogue_ip" ] && continue
             [ -z "$dev_name" ] && dev_name="$(_get_device_name "$rogue_ip")"
+
+            local cooldown_file="/tmp/mci_iot_alert_${rogue_ip}.last"
+            local last_alert=0
+            if [ -f "$cooldown_file" ]; then
+                last_alert="$(cat "$cooldown_file" 2>/dev/null || echo 0)"
+            fi
+
+            if [ "$now" -gt 0 ] && [ "$last_alert" -gt 0 ] && [ $((now - last_alert)) -lt "$alert_cooldown" ]; then
+                local time_left=$(( (alert_cooldown - (now - last_alert)) / 60 ))
+                echo "--> [NOTIFY] Suppressing duplicate IoT alert for $dev_name ($rogue_ip) (alert sent recently, cooldown active: ${time_left}m remaining)."
+                continue
+            fi
 
             local msg="IoT Watchdog Alert!
 Device: $dev_name (IP: $rogue_ip) has $conns active external connections (Threshold: $MAX_CONNS).
@@ -360,6 +385,7 @@ $top_dests"
 
             echo "--> [NOTIFY] Dispatching IoT alert for $dev_name ($rogue_ip)..."
             _dispatch_user_alert "IOT alert !" "$msg"
+            echo "$now" > "$cooldown_file" 2>/dev/null || true
         done < "$ROGUE_INFO_FILE"
     fi
 

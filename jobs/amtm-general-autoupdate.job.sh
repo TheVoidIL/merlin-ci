@@ -29,9 +29,50 @@ export PATH="/opt/bin:/opt/sbin:/sbin:/bin:/usr/sbin:/usr/bin:/jffs/scripts:$PAT
 
 AMTM_ADD_DIR="/jffs/addons/amtm"
 AMTM_MOD_REGISTRY="${AMTM_ADD_DIR}/a_fw/amtm.mod"
+AMTM_UPDATE_SCRIPTS_CONF="${AMTM_ADD_DIR}/amtmUpdateScripts"
 TPU_CHECK_FILE="/tmp/amtm-tpu-check"
 PENDING_UPDATES_FILE="/tmp/mci_amtm_pending_updates.txt"
 SCRIPTS_DIR="/jffs/scripts"
+
+# Helper: Determine if a script is permitted for automatic updates
+_is_script_autoupdate_enabled() {
+    local sname="$1"
+    [ -z "$sname" ] && return 1
+
+    local lower_sname
+    lower_sname="$(echo "$sname" | tr 'A-Z' 'a-z')"
+
+    # 1. Permanent core / default exclusions:
+    # - amtm core is strictly handled by amtm-self-update.job.sh
+    # - MerlinAU (Merlin Auto-Update) handles router firmware updates and has script
+    #   auto-update disabled by default; attempting AMTM updates causes failures/loops.
+    case "$lower_sname" in
+        amtm|*amtm*) return 1 ;;
+        merlinau|*merlinau*) return 1 ;;
+    esac
+
+    # 2. Check custom user exclusions if configured (via merlin-ci.conf)
+    if [ -n "$MCI_EXCLUDE_SCRIPTS" ]; then
+        for excl in $MCI_EXCLUDE_SCRIPTS; do
+            if [ "$(echo "$excl" | tr 'A-Z' 'a-z')" = "$lower_sname" ]; then
+                return 1
+            fi
+        done
+    fi
+
+    # 3. Check AMTM's official amtmUpdateScripts registry
+    # AMTM prefixes disabled scripts with # (disabled in amtm) or ## (disabled by script, like ##MerlinAU)
+    if [ -f "$AMTM_UPDATE_SCRIPTS_CONF" ]; then
+        if grep -qiE "^[[:space:]]*##?[[:space:]]*${sname}([[:space:]]|$)" "$AMTM_UPDATE_SCRIPTS_CONF" 2>/dev/null; then
+            return 1
+        fi
+        if grep -qiE "^[[:space:]]*##?[[:space:]]*${lower_sname}([[:space:]]|$)" "$AMTM_UPDATE_SCRIPTS_CONF" 2>/dev/null; then
+            return 1
+        fi
+    fi
+
+    return 0
+}
 
 # Helper: Locate amtm executable on Asuswrt-Merlin
 _find_amtm_bin() {
@@ -50,8 +91,9 @@ _resolve_script_path() {
     [ -z "$sname" ] && return 1
 
     # AMTM core is strictly handled by amtm-self-update. Never resolve amtm here!
+    # MerlinAU is disabled by default for AMTM auto-updates. Never resolve MerlinAU here!
     case "$sname" in
-        amtm|AMTM|*amtm*) return 1 ;;
+        amtm|AMTM|*amtm*|merlinau|MerlinAU|*merlinau*|*MerlinAU*) return 1 ;;
     esac
 
     local lower_sname
@@ -106,11 +148,6 @@ _resolve_script_path() {
             ;;
         unbound_stats|unboundstats)
             for c in "/jffs/addons/unbound/unbound_stats.sh" "/jffs/scripts/unbound_stats.sh"; do
-                [ -f "$c" ] && { echo "$c"; return 0; }
-            done
-            ;;
-        merlinau)
-            for c in "/jffs/scripts/MerlinAU.sh" "/jffs/scripts/merlinau.sh"; do
                 [ -f "$c" ] && { echo "$c"; return 0; }
             done
             ;;
@@ -378,10 +415,23 @@ mci_check_trigger() {
                     old_v="$(echo "$clean_line" | awk '{print $(NF-2)}')"
                     new_v="$(echo "$clean_line" | awk '{print $NF}')"
                     ;;
+                *"MD5 update"*)
+                    local clean_line
+                    clean_line="$(echo "$raw_line" | sed 's/^[-*[:space:]]*//')"
+                    sname="$(echo "$clean_line" | awk '{print $1}')"
+                    sname="$(echo "$sname" | tr -d '"'\'' ')"
+                    old_v="$(echo "$clean_line" | awk '{print $2}' | tr -d ',')"
+                    new_v="MD5-latest"
+                    ;;
             esac
 
             [ -z "$sname" ] && continue
-            case "$sname" in amtm|AMTM|*amtm*) continue ;; esac
+
+            # Filter out scripts not permitted for automatic updates
+            if ! _is_script_autoupdate_enabled "$sname"; then
+                printf "    ${COLOR_DIM}Skipping %s (auto-update disabled by default / in amtmUpdateScripts)${COLOR_RESET}\n" "$sname"
+                continue
+            fi
 
             # De-duplicate entries in pending list
             if ! grep -qi "^${sname} " "$PENDING_UPDATES_FILE" 2>/dev/null; then
@@ -390,8 +440,8 @@ mci_check_trigger() {
                 if [ -n "$spath" ] && [ -f "$spath" ]; then
                     if [ -z "$old_v" ] || [ "$old_v" = "installed" ] || [ "$old_v" = "unknown" ]; then
                         local v_query
-                        v_query="$("$spath" -v 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1)"
-                        [ -z "$v_query" ] && v_query="$(grep -m1 "SCRIPT_VERSION=" "$spath" 2>/dev/null | cut -d'"' -f2)"
+                        v_query="$("$spath" -v 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)*' | head -n 1)"
+                        [ -z "$v_query" ] && v_query="$(grep -m1 "SCRIPT_VERSION=" "$spath" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)*' | head -n 1)"
                         [ -n "$v_query" ] && old_v="$v_query"
                     fi
                 fi
@@ -477,6 +527,12 @@ _execute_script_update() {
     case "$sname" in amtm|AMTM) return 1 ;; esac
     case "$(basename "$spath")" in amtm) return 1 ;; esac
 
+    # Guard: Ensure script is allowed for automatic updates
+    if ! _is_script_autoupdate_enabled "$sname"; then
+        printf "--> ${COLOR_YELLOW}[SKIP]${COLOR_RESET} Script %s is disabled for automatic updates.\n" "$sname"
+        return 0
+    fi
+
     printf "--> [UPDATING] Updating ${COLOR_BOLD}%s${COLOR_RESET} (${COLOR_DIM}%s${COLOR_RESET})...\n" "$sname" "$spath"
 
     [ -x "$spath" ] || chmod 755 "$spath" 2>/dev/null || true
@@ -516,6 +572,13 @@ _execute_script_update() {
         fi
 
         [ -n "$out" ] && echo "$out"
+
+        # Detect explicit script output indicating auto-update is disabled
+        if echo "$out" | grep -qiE "(currently disabled|disabled via amtm|is disabled)"; then
+            printf "    ${COLOR_YELLOW}[SKIP]${COLOR_RESET} %s reported auto-updates are disabled.\n" "$sname"
+            return 1
+        fi
+
         if echo "$out" | grep -qiE "(updated successfully|updating to|up to date|changes saved|complete)"; then
             return 0
         fi
@@ -530,20 +593,18 @@ _execute_script_update() {
         fi
 
         [ -n "$out" ] && echo "$out"
+
+        if echo "$out" | grep -qiE "(currently disabled|disabled via amtm|is disabled)"; then
+            printf "    ${COLOR_YELLOW}[SKIP]${COLOR_RESET} %s reported auto-updates are disabled.\n" "$sname"
+            return 1
+        fi
+
         if echo "$out" | grep -qiE "(updated successfully|updating to|up to date|changes saved|complete)"; then
             return 0
         fi
 
-        # Method 4: Flags (-u, -f)
+        # Method 4: Flags (-u)
         if "$spath" -u < /dev/null 2>&1; then
-            return 0
-        fi
-        if "$spath" -f < /dev/null 2>&1; then
-            return 0
-        fi
-
-        # If exit code was 0 from amtmupdate/update and no error:
-        if sh "$spath" amtmupdate check >/dev/null 2>&1; then
             return 0
         fi
 
@@ -578,6 +639,12 @@ mci_run() {
         old_v=$(echo "$line" | awk '{print $2}')
         new_v=$(echo "$line" | awk '{print $3}')
 
+        # Safeguard: Verify script is permitted for auto-update
+        if ! _is_script_autoupdate_enabled "$sname"; then
+            printf "--> ${COLOR_YELLOW}[SKIP]${COLOR_RESET} %s is disabled for automatic updates. Skipping.\n" "$sname"
+            continue
+        fi
+
         # Resolve script location
         local script_path
         script_path="$(_resolve_script_path "$sname")"
@@ -604,8 +671,9 @@ mci_run() {
         while read -r line; do
             local done_sname
             done_sname=$(echo "$line" | awk '{print $1}')
-            [ -n "$done_sname" ] && sed -i "/${done_sname}/d" "${AMTM_ADD_DIR}/availUpd.txt" 2>/dev/null || true
+            [ -n "$done_sname" ] && sed -i "/${done_sname}/Id" "${AMTM_ADD_DIR}/availUpd.txt" 2>/dev/null || true
         done < "$PENDING_UPDATES_FILE"
+        sed -i '/^[[:space:]]*[-*]*[[:space:]]*MerlinAU/Id;/^MerlinAU/Id' "${AMTM_ADD_DIR}/availUpd.txt" 2>/dev/null || true
     fi
 
     # Prune from /tmp/amtm-tpu-check
@@ -613,8 +681,9 @@ mci_run() {
         while read -r line; do
             local done_sname
             done_sname=$(echo "$line" | awk '{print $1}')
-            [ -n "$done_sname" ] && sed -i "/${done_sname}/d" "$TPU_CHECK_FILE" 2>/dev/null || true
+            [ -n "$done_sname" ] && sed -i "/${done_sname}/Id" "$TPU_CHECK_FILE" 2>/dev/null || true
         done < "$PENDING_UPDATES_FILE"
+        sed -i '/^[[:space:]]*[-*]*[[:space:]]*MerlinAU/Id' "$TPU_CHECK_FILE" 2>/dev/null || true
     fi
 
     if [ "$failed_count" -gt 0 ] && [ "$updated_count" -eq 0 ]; then
