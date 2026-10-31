@@ -117,30 +117,30 @@ mci
 
 ### Notification Channels
 Merlin-CI supports three notification channels:
-1. **Email (SMTP)**: Direct delivery to your personal email inbox via built-in `curl` or `sendmail` (supports Gmail App Passwords, Outlook, custom SMTP servers).
-   - **Auto-Scraper (`[s]` or `mci scrape-email`)**: Automatically discovers and imports existing SMTP credentials already configured in AMTM, WICENS, Diversion, NVRAM, or `/jffs/scripts/`!
+1. **Email (AMTM `em` & [@Martinski](https://github.com/Martinski4GitHub/SendEmail)'s `SendEmail` `se`)**:
+   - **Zero-Config Native Integration**: If you have configured email in **AMTM (`em`)** (`/jffs/addons/amtm/mail/email.conf` + encrypted `emailpw.enc`) or installed **@Martinski's `SendEmail` (`se`)** (`/jffs/scripts/SendEmail` / `CustomEMailFunctions.lib.sh`), Merlin-CI automatically detects and uses it out of the box—**no plaintext passwords or manual SMTP configuration needed in `merlin-ci.conf`!**
+   - **Dual Transport Modes (`MCI_USE_SENDEMAIL`)**:
+     - `auto` / `1`: Dispatches notifications through `@Martinski`'s `/jffs/scripts/SendEmail` (`se`) or shared `CustomEMailFunctions.lib.sh` library when installed.
+     - `0`: Uses Merlin-CI's built-in `multipart/alternative` MIME dispatcher to deliver dark-mode **HTML Executive NOC Dashboards** (with 8-card KPI telemetry grids and semantic badges) alongside an ANSI-stripped `text/plain` fallback, decrypting AMTM's `emailpw.enc` in memory at runtime.
 2. **Discord Webhooks**: Rich embed messages showing router model, status, and duration.
 3. **Telegram Bot**: Instant message notifications.
 
-Email and Webhook settings can be managed via `mci` (option `[8]`) or edited in `/jffs/addons/merlin-ci/merlin-ci.conf`:
+Notification settings can be managed via `mci` (option `[8]`) or in `/jffs/addons/merlin-ci/merlin-ci.conf`:
 
 ```ini
-# --- Email (SMTP) Notifications ---
+# --- Email Notifications (Auto-inherited from AMTM 'em' / SendEmail 'se') ---
 MCI_EMAIL_ENABLED=1
-MCI_SMTP_SERVER="smtp.gmail.com"
-MCI_SMTP_PORT=465
-MCI_SMTP_USER="myrouteralerts@gmail.com"
-MCI_SMTP_PASS="xxxx-xxxx-xxxx-xxxx"   # App Password
-MCI_SMTP_FROM="router@home.arpa"
-MCI_SMTP_TO="myemail@example.com"
-MCI_SMTP_TLS=1
+# "auto" = Use @Martinski SendEmail ('se') if installed, else built-in HTML/MIME via AMTM 'em'
+# "1"    = Prefer @Martinski SendEmail / CustomEMailFunctions.lib.sh
+# "0"    = Force built-in Multipart HTML Dashboard + Plain-Text MIME
+MCI_USE_SENDEMAIL="auto"
 ```
 
 ### 2. Command-Line Interface (CLI)
 
 ```sh
-# Auto-detect and import SMTP email credentials from AMTM / Asuswrt-Merlin
-mci scrape-email
+# Test email / webhook notification delivery
+mci notify-test
 
 # Run master general update across all AMTM scripts with pre-flight backup & smoke tests
 mci run amtm-general-autoupdate -f

@@ -64,8 +64,11 @@ config_set_defaults() {
     MCI_JOB_TIMEOUT="${MCI_JOB_TIMEOUT:-600}"
     MCI_NICE_LEVEL="${MCI_NICE_LEVEL:-19}"
 
-    # Email (SMTP) Notifications
+    # Email (SMTP / AMTM / @Martinski SendEmail) Notifications
     MCI_EMAIL_ENABLED="${MCI_EMAIL_ENABLED:-0}"
+    # Email Transport Mode: "auto" (uses @Martinski SendEmail if installed, else built-in HTML MIME),
+    #                       "1" (prefer @Martinski SendEmail / CEM), "0" (built-in multipart HTML/MIME)
+    MCI_USE_SENDEMAIL="${MCI_USE_SENDEMAIL:-auto}"
     MCI_SMTP_SERVER="${MCI_SMTP_SERVER:-smtp.gmail.com}"
     MCI_SMTP_PORT="${MCI_SMTP_PORT:-465}"
     MCI_SMTP_USER="${MCI_SMTP_USER:-}"
@@ -90,6 +93,17 @@ config_set_defaults() {
     MCI_EXCLUDE_SCRIPTS="${MCI_EXCLUDE_SCRIPTS:-amtm MerlinAU merlinau}"
 }
 
+config_find_sendemail() {
+    local cand
+    for cand in "/jffs/scripts/SendEmail" "/jffs/addons/SendEmail.d/SendEmail.sh" "/jffs/scripts/SendEmail.sh"; do
+        if [ -f "$cand" ] && [ -x "$cand" ]; then
+            echo "$cand"
+            return 0
+        fi
+    done
+    return 1
+}
+
 config_load() {
     local active_conf=""
     if [ -n "$MCI_CUSTOM_CONF" ] && [ -f "$MCI_CUSTOM_CONF" ]; then
@@ -112,7 +126,12 @@ config_load() {
 
     config_set_defaults
 
-    # Seamless AMTM Auto-Inheritance: If email credentials are not set in merlin-ci.conf, auto-inherit from AMTM!
+    MCI_SENDEMAIL_BIN="$(config_find_sendemail 2>/dev/null || true)"
+    MCI_CEM_LIB=""
+    [ -s "/jffs/addons/shared-libs/CustomEMailFunctions.lib.sh" ] && MCI_CEM_LIB="/jffs/addons/shared-libs/CustomEMailFunctions.lib.sh"
+
+    # Seamless AMTM & @Martinski SendEmail Auto-Inheritance:
+    # If email credentials are not set in merlin-ci.conf, auto-inherit from AMTM's encrypted store!
     if [ -z "$MCI_SMTP_USER" ] || [ -z "$MCI_SMTP_PASS" ]; then
         if [ -f "/jffs/addons/amtm/mail/email.conf" ] && [ -f "/jffs/addons/amtm/mail/emailpw.enc" ]; then
             local amtm_conf="/jffs/addons/amtm/mail/email.conf"
@@ -126,7 +145,9 @@ config_load() {
             [ -z "$MCI_SMTP_TO" ] && MCI_SMTP_TO="$(grep -E '^[[:space:]]*TO_ADDRESS=' "$amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
             [ -z "$MCI_SMTP_SERVER" ] && MCI_SMTP_SERVER="$(grep -E '^[[:space:]]*SMTP=' "$amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
             [ -z "$MCI_SMTP_PORT" ] && MCI_SMTP_PORT="$(grep -E '^[[:space:]]*PORT=' "$amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
-            [ -n "$MCI_SMTP_USER" ] && [ -n "$MCI_SMTP_PASS" ] && MCI_EMAIL_ENABLED=1
+            if [ -n "$MCI_SENDEMAIL_BIN" ] || { [ -n "$MCI_SMTP_USER" ] && [ -n "$MCI_SMTP_PASS" ]; }; then
+                MCI_EMAIL_ENABLED=1
+            fi
         fi
     fi
 

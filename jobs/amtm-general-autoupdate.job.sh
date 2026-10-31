@@ -279,6 +279,11 @@ _resolve_script_path() {
                 [ -f "$c" ] && { echo "$c"; return 0; }
             done
             ;;
+        sendemail|se)
+            for c in "/jffs/addons/SendEmail.d/SendEmail.sh" "/jffs/scripts/SendEmail" "/jffs/scripts/SendEmail.sh"; do
+                [ -f "$c" ] && { echo "$c"; return 0; }
+            done
+            ;;
     esac
 
     # 2. Dynamic Search in official AMTM master registry (a_fw/amtm.mod)
@@ -676,7 +681,10 @@ _execute_script_update() {
             return 0
         fi
 
-        # Method 4: Flags (-u)
+        # Method 4: Flags (-checkupdate for @Martinski scripts like SendEmail, or -u)
+        if "$spath" -checkupdate < /dev/null 2>&1; then
+            return 0
+        fi
         if "$spath" -u < /dev/null 2>&1; then
             return 0
         fi

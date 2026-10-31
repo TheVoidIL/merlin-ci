@@ -13,8 +13,26 @@
 # ==============================================================================
 
 # --- Email Configuration ---
-# Optional: Load local credentials from /jffs/scripts/send_alert.conf
+# 1. Optional local override from /jffs/scripts/send_alert.conf
 [ -f "/jffs/scripts/send_alert.conf" ] && . "/jffs/scripts/send_alert.conf"
+
+# 2. Seamless AMTM Encrypted Email Auto-Inheritance (/jffs/addons/amtm/mail/email.conf)
+if [ -z "$APP_PASSWORD" ] || [ "$APP_PASSWORD" = "your_gmail_app_password" ]; then
+    if [ -f "/jffs/addons/amtm/mail/email.conf" ] && [ -f "/jffs/addons/amtm/mail/emailpw.enc" ]; then
+        _amtm_conf="/jffs/addons/amtm/mail/email.conf"
+        _amtm_enc="$(grep -E '^[[:space:]]*emailPwEnc=' "$_amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
+        [ -z "$_amtm_enc" ] && _amtm_enc="-pbkdf2"
+        _amtm_smtp="$(grep -E '^[[:space:]]*SMTP=' "$_amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
+        _amtm_port="$(grep -E '^[[:space:]]*PORT=' "$_amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
+        _amtm_proto="$(grep -E '^[[:space:]]*PROTOCOL=' "$_amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
+        [ -z "$_amtm_proto" ] && _amtm_proto="smtps"
+        [ -n "$_amtm_smtp" ] && SMTP_SERVER="${_amtm_proto}://${_amtm_smtp}:${_amtm_port:-465}"
+        SENDER_EMAIL="$(grep -E '^[[:space:]]*FROM_ADDRESS=' "$_amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
+        [ -z "$SENDER_EMAIL" ] && SENDER_EMAIL="$(grep -E '^[[:space:]]*USERNAME=' "$_amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
+        RECEIVER_EMAIL="$(grep -E '^[[:space:]]*TO_ADDRESS=' "$_amtm_conf" 2>/dev/null | cut -d= -f2- | tr -d '"'\'' ' || true)"
+        APP_PASSWORD="$(openssl aes-256-cbc $_amtm_enc -d -in /jffs/addons/amtm/mail/emailpw.enc -pass pass:ditbabot,isoi 2>/dev/null || true)"
+    fi
+fi
 
 SMTP_SERVER="${SMTP_SERVER:-smtps://smtp.gmail.com:465}"
 SENDER_EMAIL="${SENDER_EMAIL:-your_router_alert@gmail.com}"
@@ -815,16 +833,32 @@ ${FINAL_HTML}
 --${BOUNDARY}--
 EOF
 
-# Send the email using curl securely (TLS)
-curl --ssl-reqd \
-     --url "$SMTP_SERVER" \
-     --user "$SENDER_EMAIL:$APP_PASSWORD" \
-     --mail-from "$SENDER_EMAIL" \
-     --mail-rcpt "$RECEIVER_EMAIL" \
-     --upload-file "$TEMP_EMAIL" \
-     --silent
+CURL_STATUS=1
+if [ -n "$APP_PASSWORD" ] && [ "$APP_PASSWORD" != "your_gmail_app_password" ]; then
+    # Send the email using curl securely (TLS)
+    curl --ssl-reqd \
+         --url "$SMTP_SERVER" \
+         --user "$SENDER_EMAIL:$APP_PASSWORD" \
+         --mail-from "$SENDER_EMAIL" \
+         --mail-rcpt "$RECEIVER_EMAIL" \
+         --upload-file "$TEMP_EMAIL" \
+         --silent
+    CURL_STATUS=$?
+fi
 
-CURL_STATUS=$?
+# Fallback to @Martinski SendEmail (AMTM 'se') if curl did not succeed
+if [ $CURL_STATUS -ne 0 ]; then
+    for _se_bin in "/jffs/scripts/SendEmail" "/jffs/addons/SendEmail.d/SendEmail.sh"; do
+        if [ -x "$_se_bin" ]; then
+            _se_body="/tmp/mci_alert_body_$$.txt"
+            printf "%s\n" "$clean_plain_message" > "$_se_body"
+            "$_se_bin" -quiet -From="Merlin-CI" "$SUBJECT" -Body="$_se_body" -Title="ASUS Router Alert (${ROUTER_NAME})" >/dev/null 2>&1
+            CURL_STATUS=$?
+            rm -f "$_se_body" 2>/dev/null || true
+            break
+        fi
+    done
+fi
 
 # Clean up the temporary file from RAM
 rm -f "$TEMP_EMAIL"
@@ -833,5 +867,5 @@ rm -f "$TEMP_EMAIL"
 if [ $CURL_STATUS -eq 0 ]; then
     logger -t "SendAlert" "Email sent successfully: $SUBJECT"
 else
-    logger -t "SendAlert" "Failed to send email. curl exit code: $CURL_STATUS"
+    logger -t "SendAlert" "Failed to send email. Exit code: $CURL_STATUS"
 fi

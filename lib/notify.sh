@@ -1,7 +1,8 @@
 #!/bin/sh
 # ==============================================================================
 # Merlin-CI: Notification & Status Reporting Library (lib/notify.sh)
-# Supports Email (SMTP/curl/sendmail), Discord, and Telegram
+# Supports @Martinski SendEmail (AMTM 'se'), Native AMTM Email ('em'),
+# Multipart HTML/MIME (SMTP/curl/sendmail), Discord, and Telegram
 # ==============================================================================
 
 notify_email() {
@@ -18,23 +19,7 @@ notify_email() {
     local now_ts
     now_ts="$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date)"
 
-    [ -z "$MCI_SMTP_PASS" ] && _is_function config_load && config_load 2>/dev/null || true
-
-    if [ "$MCI_EMAIL_ENABLED" != "1" ] || [ -z "$MCI_SMTP_PASS" ]; then
-        if [ -x "/jffs/scripts/send_alert.sh" ]; then
-            /jffs/scripts/send_alert.sh "$subject" "$plain_log"
-            echo "[$now_ts] [SUCCESS] Delivered email via /jffs/scripts/send_alert.sh" >> "$email_log"
-            return 0
-        fi
-        echo "[$now_ts] [SKIP] Email disabled (MCI_EMAIL_ENABLED=$MCI_EMAIL_ENABLED)" >> "$email_log"
-        return 0
-    fi
-
-    if [ -z "$MCI_SMTP_TO" ] || [ -z "$MCI_SMTP_SERVER" ]; then
-        echo "[$now_ts] [ERROR] Incomplete config: Server='${MCI_SMTP_SERVER}', To='${MCI_SMTP_TO}'" >> "$email_log"
-        echo "--> [NOTIFY ERROR] Incomplete email configuration (Server or Recipient missing)."
-        return 1
-    fi
+    [ -z "$MCI_SMTP_PASS" ] && type config_load >/dev/null 2>&1 && config_load 2>/dev/null || true
 
     local router_name router_fw
     router_name="$(nvram get productid 2>/dev/null || uname -m)"
@@ -126,6 +111,104 @@ Version Information:
     # Prepare ANSI-free, HTML-safe log snippet for crisp display
     local html_log
     html_log="$(echo "$plain_log" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+
+    # Locate @Martinski SendEmail tool (AMTM 'se') if installed
+    local sendemail_bin=""
+    for se_cand in "/jffs/scripts/SendEmail" "/jffs/addons/SendEmail.d/SendEmail.sh" "/jffs/scripts/SendEmail.sh"; do
+        if [ -f "$se_cand" ] && [ -x "$se_cand" ]; then
+            sendemail_bin="$se_cand"
+            break
+        fi
+    done
+
+    local cem_lib="/jffs/addons/shared-libs/CustomEMailFunctions.lib.sh"
+
+    if [ "$MCI_EMAIL_ENABLED" != "1" ]; then
+        if [ -x "/jffs/scripts/send_alert.sh" ]; then
+            /jffs/scripts/send_alert.sh "$subject" "$plain_log"
+            echo "[$now_ts] [SUCCESS] Delivered email via /jffs/scripts/send_alert.sh" >> "$email_log"
+            return 0
+        fi
+        echo "[$now_ts] [SKIP] Email disabled (MCI_EMAIL_ENABLED=$MCI_EMAIL_ENABLED)" >> "$email_log"
+        return 0
+    fi
+
+    # --------------------------------------------------------------------------
+    # Transport 1: @Martinski SendEmail (AMTM 'se') / CustomEMailFunctions.lib.sh
+    # Used when MCI_USE_SENDEMAIL="1" or "auto" (default when SendEmail installed)
+    # --------------------------------------------------------------------------
+    if [ "${MCI_USE_SENDEMAIL:-auto}" != "0" ] && [ -f "/jffs/addons/amtm/mail/email.conf" ]; then
+        if [ -n "$sendemail_bin" ] || { [ "${MCI_USE_SENDEMAIL}" = "1" ] && [ -s "$cem_lib" ]; }; then
+            local se_body_file="/tmp/mci_sendemail_$$.txt"
+            local se_err_file="/tmp/mci_sendemail_err_$$.log"
+            cat << EOF > "$se_body_file"
+Merlin-CI Automated Notification
+================================================================================
+Job Name    : ${job_name}
+Status      : ${status}
+Router Host : ${router_name}
+Firmware    : ${router_fw}
+Duration    : ${duration}s
+Timestamp   : $(date)
+================================================================================
+${version_info}${action_summary}
+
+Execution Log Snippet:
+--------------------------------------------------------------------------------
+${plain_log:-No additional log details provided.}
+EOF
+            if [ -n "$sendemail_bin" ]; then
+                echo "--> [NOTIFY] Dispatching email ($status) via @Martinski SendEmail ($sendemail_bin)..."
+                "$sendemail_bin" -quiet -From="Merlin-CI" "$subject" -Body="$se_body_file" -Title="Merlin-CI Automated Notification (${router_name})" >"$se_err_file" 2>&1
+                local se_rc=$?
+                rm -f "$se_body_file" 2>/dev/null || true
+                if [ $se_rc -eq 0 ]; then
+                    echo "[$now_ts] [SUCCESS] Delivered email via @Martinski SendEmail ($sendemail_bin)" >> "$email_log"
+                    rm -f "$se_err_file" 2>/dev/null || true
+                    return 0
+                else
+                    echo "[$now_ts] [WARN] SendEmail ($sendemail_bin) returned code $se_rc. Falling back to built-in SMTP dispatcher..." >> "$email_log"
+                    cat "$se_err_file" >> "$email_log" 2>/dev/null || true
+                    rm -f "$se_err_file" 2>/dev/null || true
+                fi
+            elif [ -s "$cem_lib" ]; then
+                echo "--> [NOTIFY] Dispatching email ($status) via @Martinski CustomEMailFunctions.lib.sh..."
+                (
+                    cemIsVerboseMode=false
+                    FROM_NAME="Merlin-CI"
+                    # shellcheck disable=SC1090
+                    . "$cem_lib"
+                    _SendEMailNotification_CEM_ "$subject" -File="$se_body_file" -Title="Merlin-CI Automated Notification (${router_name})"
+                ) >"$se_err_file" 2>&1
+                local cem_rc=$?
+                rm -f "$se_body_file" 2>/dev/null || true
+                if [ $cem_rc -eq 0 ]; then
+                    echo "[$now_ts] [SUCCESS] Delivered email via @Martinski CustomEMailFunctions.lib.sh" >> "$email_log"
+                    rm -f "$se_err_file" 2>/dev/null || true
+                    return 0
+                else
+                    echo "[$now_ts] [WARN] CustomEMailFunctions.lib.sh returned code $cem_rc. Falling back to built-in SMTP dispatcher..." >> "$email_log"
+                    cat "$se_err_file" >> "$email_log" 2>/dev/null || true
+                    rm -f "$se_err_file" 2>/dev/null || true
+                fi
+            fi
+        fi
+    fi
+
+    # --------------------------------------------------------------------------
+    # Transport 2: Built-in Multipart HTML Dashboard + Plain-Text MIME Dispatcher
+    # --------------------------------------------------------------------------
+    if [ -z "$MCI_SMTP_PASS" ] && [ -x "/jffs/scripts/send_alert.sh" ]; then
+        /jffs/scripts/send_alert.sh "$subject" "$plain_log"
+        echo "[$now_ts] [SUCCESS] Delivered email via /jffs/scripts/send_alert.sh" >> "$email_log"
+        return 0
+    fi
+
+    if [ -z "$MCI_SMTP_TO" ] || [ -z "$MCI_SMTP_SERVER" ]; then
+        echo "[$now_ts] [ERROR] Incomplete config: Server='${MCI_SMTP_SERVER}', To='${MCI_SMTP_TO}'" >> "$email_log"
+        echo "--> [NOTIFY ERROR] Incomplete email configuration (Configure AMTM 'em' / SendEmail 'se' or merlin-ci.conf)."
+        return 1
+    fi
 
     local boundary="MCI_BOUNDARY_$$"
     local email_file="/tmp/mci_mail_$$.txt"

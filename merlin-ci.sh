@@ -451,15 +451,35 @@ action_notifications() {
         printf "${COLOR_BOLD}=== Notification Settings ===${COLOR_RESET}\n\n"
 
         local email_status="[DISABLED]"
-        [ "$MCI_EMAIL_ENABLED" = "1" ] && email_status="[ENABLED]"
+        [ "$MCI_EMAIL_ENABLED" = "1" ] && email_status="${COLOR_GREEN}[ENABLED]${COLOR_RESET}"
 
-        printf "  ${COLOR_CYAN}[1]${COLOR_RESET} Email Notifications     : %s (To: %s)\n" "$email_status" "${MCI_SMTP_TO:-Not set}"
+        local se_detected="${COLOR_DIM}Not installed (AMTM -> 'se')${COLOR_RESET}"
+        if [ -x "/jffs/scripts/SendEmail" ] || [ -x "/jffs/addons/SendEmail.d/SendEmail.sh" ]; then
+            se_detected="${COLOR_GREEN}[INSTALLED] (/jffs/scripts/SendEmail)${COLOR_RESET}"
+        elif [ -s "/jffs/addons/shared-libs/CustomEMailFunctions.lib.sh" ]; then
+            se_detected="${COLOR_GREEN}[CEM LIB DETECTED] (CustomEMailFunctions.lib.sh)${COLOR_RESET}"
+        fi
+
+        local amtm_em_detected="${COLOR_DIM}Not configured (AMTM -> 'em')${COLOR_RESET}"
+        if [ -f "/jffs/addons/amtm/mail/email.conf" ] && [ -f "/jffs/addons/amtm/mail/emailpw.enc" ]; then
+            amtm_em_detected="${COLOR_GREEN}[ACTIVE] (Encrypted AMTM email.conf + emailpw.enc)${COLOR_RESET}"
+        fi
+
+        local transport_label="Auto (SendEmail 'se' if installed, else Built-in HTML/MIME)"
+        [ "${MCI_USE_SENDEMAIL:-auto}" = "1" ] && transport_label="@Martinski SendEmail ('se' / CEM Library)"
+        [ "${MCI_USE_SENDEMAIL:-auto}" = "0" ] && transport_label="Built-in Multipart HTML Dashboard + Plain-Text MIME"
+
+        printf "  ${COLOR_BOLD}AMTM Email ('em')       :${COLOR_RESET} %b\n" "$amtm_em_detected"
+        printf "  ${COLOR_BOLD}SendEmail Tool ('se')   :${COLOR_RESET} %b\n" "$se_detected"
+        echo "--------------------------------------------------------------------------------"
+        printf "  ${COLOR_CYAN}[1]${COLOR_RESET} Email Notifications     : %b (To: %s)\n" "$email_status" "${MCI_SMTP_TO:-Auto from AMTM}"
+        printf "  ${COLOR_CYAN}[m]${COLOR_RESET} Email Transport Mode    : %s\n" "$transport_label"
         printf "  ${COLOR_CYAN}[2]${COLOR_RESET} SMTP Server & Port      : %s:%s\n" "${MCI_SMTP_SERVER:-smtp.gmail.com}" "${MCI_SMTP_PORT:-465}"
-        printf "  ${COLOR_CYAN}[3]${COLOR_RESET} SMTP Username (Login)   : %s\n" "${MCI_SMTP_USER:-Not set}"
-        printf "  ${COLOR_CYAN}[4]${COLOR_RESET} SMTP Password / App Key : %s\n" "$([ -n "$MCI_SMTP_PASS" ] && echo "********" || echo "Not set")"
+        printf "  ${COLOR_CYAN}[3]${COLOR_RESET} SMTP Username (Login)   : %s\n" "${MCI_SMTP_USER:-Auto from AMTM}"
+        printf "  ${COLOR_CYAN}[4]${COLOR_RESET} SMTP Password / App Key : %s\n" "$([ -n "$MCI_SMTP_PASS" ] && echo "******** (Loaded)" || echo "Not set")"
         printf "  ${COLOR_CYAN}[5]${COLOR_RESET} Sender & Recipient      : From: %s -> To: %s\n" "${MCI_SMTP_FROM:-router.local}" "${MCI_SMTP_TO:-Not set}"
         printf "  ${COLOR_CYAN}[6]${COLOR_RESET} Send Test Email Now\n"
-        printf "  ${COLOR_YELLOW}[s]${COLOR_RESET} Scrape & Import SMTP from AMTM / Asuswrt-Merlin\n"
+        printf "  ${COLOR_YELLOW}[s]${COLOR_RESET} Legacy Fallback: Scrape SMTP from NVRAM / Other Addons\n"
         printf "  ${COLOR_CYAN}[l]${COLOR_RESET} View Email Log (Troubleshooting)\n"
         printf "  ${COLOR_CYAN}[7]${COLOR_RESET} Discord Webhook URL     : %s\n" "${MCI_DISCORD_WEBHOOK_URL:-Not configured}"
         printf "  ${COLOR_CYAN}[8]${COLOR_RESET} Telegram Bot Token      : %s\n" "$([ -n "$MCI_TELEGRAM_BOT_TOKEN" ] && echo "********" || echo "Not configured")"
@@ -476,6 +496,19 @@ action_notifications() {
                 case "$val" in
                     1|0) config_set "MCI_EMAIL_ENABLED" "$val" ;;
                     *) echo "Invalid choice (use 1 or 0)." ; sleep 1 ;;
+                esac
+                ;;
+            m|M)
+                echo ""
+                echo "Select Email Transport Mode:"
+                echo "  [auto] Auto-detect (Uses @Martinski SendEmail 'se' if installed, else Built-in HTML/MIME)"
+                echo "  [1]    Prefer @Martinski SendEmail ('se' / CustomEMailFunctions.lib.sh)"
+                echo "  [0]    Force Built-in Multipart HTML Executive Dashboard + Plain-Text MIME"
+                ui_prompt "Enter transport mode (auto / 1 / 0)" "${MCI_USE_SENDEMAIL:-auto}"
+                read -r m_val
+                case "$m_val" in
+                    auto|1|0) config_set "MCI_USE_SENDEMAIL" "$m_val" ;;
+                    *) echo "Invalid choice (use auto, 1, or 0)." ; sleep 1 ;;
                 esac
                 ;;
             2)
