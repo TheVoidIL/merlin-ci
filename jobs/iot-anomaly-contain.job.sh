@@ -15,6 +15,9 @@ JOB_NAME="iot-anomaly-contain"
 JOB_DESCRIPTION="IoT anomaly defender: monitors IoT conntrack spikes and enforces active containment"
 JOB_ENABLED=1
 JOB_TYPE="watchdog"
+# Containment defender job: dispatches dedicated forensic alerts; suppress generic break-fix email
+JOB_IS_HEALING=0
+JOB_NOTIFY_HEALED=0
 
 DEFAULT_IOT_IPS="192.168.53.129 192.168.53.94 192.168.53.96 192.168.53.165 192.168.53.246"
 DEFAULT_EXCLUDE="192.168.53.144 fe:01:d0:ea:bd:c1 SM-L310 Galaxy-Watch7 192.168.53.2 38:8c:ef:2c:3c:9e Samsung"

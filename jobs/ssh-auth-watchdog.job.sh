@@ -17,6 +17,9 @@ JOB_NAME="ssh-auth-watchdog"
 JOB_DESCRIPTION="Security defender: detects SSH brute-force attacks in syslog and defends router"
 JOB_ENABLED=1
 JOB_TYPE="watchdog"
+# Security defender job: alerts via send_alert.sh directly; do not flag as router break-fix healing
+JOB_IS_HEALING=0
+JOB_NOTIFY_HEALED=0
 
 FAILED_THRESHOLD=5
 LAN_FAIL_LIMIT=3

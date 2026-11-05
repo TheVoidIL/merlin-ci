@@ -52,6 +52,9 @@ notify_email() {
         FAILED|failed)
             subject="[Merlin-CI] FAILED: Job ${job_name} on ${router_name}"
             ;;
+        SECURITY|security)
+            subject="[Merlin-CI] SECURITY: ${job_name} Alert on ${router_name}"
+            ;;
         TEST|test)
             subject="[Merlin-CI] Test Notification from ${router_name}"
             ;;
@@ -87,6 +90,9 @@ Version Information:
         FAILED|failed)
             action_summary="Action: Job execution failed. Check log snippet below."
             ;;
+        SECURITY|security)
+            action_summary="Action: Security sentry detected a network event and registered security telemetry."
+            ;;
         TEST|test)
             action_summary="Action: Manual verification test of Merlin-CI notification pipeline."
             ;;
@@ -98,6 +104,7 @@ Version Information:
         FAILED|failed|FAIL|fail) badge_bg="#ef4444" ;; # Red
         TRIGGERED|triggered) badge_bg="#f59e0b" ;; # Amber/Orange
         ROLLED_BACK|rolled_back) badge_bg="#f59e0b" ;; # Amber/Orange
+        SECURITY|security) badge_bg="#3b82f6" ;; # Blue
         *) badge_bg="#10b981" ;; # Green
     esac
 

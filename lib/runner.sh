@@ -110,6 +110,7 @@ runner_execute_job() {
     JOB_TYPE="daily"
     JOB_NOTIFY_SUCCESS=""
     JOB_NOTIFY_HEALED=""
+    JOB_IS_HEALING=""
     JOB_BYPASS_LOAD_GUARD=0
     MCI_OLD_VERSION=""
     MCI_NEW_VERSION=""
@@ -303,9 +304,11 @@ _finish_job() {
     echo "$(date '+%Y-%m-%d %H:%M:%S')" > "${MCI_LOG_DIR}/last_run_time"
 
     local is_healing_event=0
-    # A healing event occurs when a watchdog job triggered autonomously on an anomaly and restored nominal state
-    if [ "${JOB_TYPE:-}" = "watchdog" ] && [ "$force_flag" != "1" ] && [ "$status" = "SUCCESS" ]; then
-        is_healing_event=1
+    # A healing event occurs when an autonomous self-healing watchdog triggered on an anomaly and restored nominal state
+    if [ "${JOB_TYPE:-}" = "watchdog" ] || [ "${JOB_TYPE:-}" = "fast" ]; then
+        if [ "$force_flag" != "1" ] && [ "$status" = "SUCCESS" ] && [ "${JOB_IS_HEALING:-1}" != "0" ]; then
+            is_healing_event=1
+        fi
     fi
 
     # An upgrade event occurs when a job successfully upgraded software or script versions
@@ -324,6 +327,8 @@ _finish_job() {
             printf "[%s] [UPGRADE] %s (%s -> %s, Completed in %ss)\n" "$now_time" "$name" "${MCI_OLD_VERSION:-installed}" "$MCI_NEW_VERSION" "$duration" >> "$daily_log" 2>/dev/null || true
         elif [ "$is_healing_event" = "1" ]; then
             printf "[%s] [HEALED] %s (Auto-repaired in %ss)\n" "$now_time" "$name" "$duration" >> "$daily_log" 2>/dev/null || true
+        elif [ "${JOB_IS_HEALING:-1}" = "0" ]; then
+            printf "[%s] [SECURITY] %s (Completed in %ss)\n" "$now_time" "$name" "$duration" >> "$daily_log" 2>/dev/null || true
         else
             printf "[%s] [PASS] %s (Completed in %ss)\n" "$now_time" "$name" "$duration" >> "$daily_log" 2>/dev/null || true
         fi

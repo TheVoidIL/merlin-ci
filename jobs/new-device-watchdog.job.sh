@@ -25,6 +25,9 @@ JOB_NAME="new-device-watchdog"
 JOB_DESCRIPTION="Network sentry: detects new unrecognized devices on the network via DHCP leases"
 JOB_ENABLED=1
 JOB_TYPE="watchdog"
+# Security sentry job: alerts on new devices directly; do not flag as router break-fix healing
+JOB_IS_HEALING=0
+JOB_NOTIFY_HEALED=0
 
 KNOWN_MACS_FILE="/jffs/scripts/known_macs.txt"
 LEASES_FILE="/var/lib/misc/dnsmasq.leases"
