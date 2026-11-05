@@ -9,7 +9,7 @@
 # ==============================================================================
 
 JOB_NAME="mlo-storm-watchdog"
-JOB_DESCRIPTION="Self-healing watchdog: detects Wi-Fi 7 MLO deauth storms & Trend Micro UDB ioctl faults to prevent kernel deadlock"
+JOB_DESCRIPTION="Self-healing watchdog: detects Wi-Fi 7 MLO deauth storms, Broadcom FIFO congestion & BPM memory exhaustion to prevent kernel deadlock"
 JOB_ENABLED=1
 # Tier 0 (fast): evaluated every 2 min via MCI_Fast cron. A storm can escalate to a
 # kernel/IO stall and WAN (PPPoE LCP) drop within ~15 min, so the 15-min tier is too slow.
@@ -20,6 +20,9 @@ JOB_BYPASS_LOAD_GUARD=1
 # Thresholds
 MLO_LOOP_THRESHOLD=5       # Trigger if >= 5 MLO assoc failures in window
 UDB_FAULT_THRESHOLD=10     # Trigger if >= 10 tdts UDB collisions or any ioctl fault in window
+FIFO_FAULT_THRESHOLD=3     # Trigger if >= 3 Broadcom wireless FIFO ring buffer faults in window
+BPM_FAULT_THRESHOLD=1      # Trigger if any Broadcom Buffer Pool Manager allocation faults in window
+DEAUTH_STORM_THRESHOLD=15  # Trigger if >= 15 Broadcom driver deauth error (-30) events in window
 
 STATE_FILE="/tmp/mci_mlo_storm_state.txt"
 SYSLOG_FILE="/tmp/syslog.log"
@@ -59,12 +62,12 @@ _extract_recent_events() {
 
     local start_line=$((last_line + 1))
     sed -n "${start_line},\$p" "$SYSLOG_FILE" 2>/dev/null | \
-        grep -Ei "MLO ERROR|tdts_core_ioctl|already exist in UDB" \
+        grep -Ei "MLO ERROR|tdts_core_ioctl|already exist in UDB|fifo_bitmap_by_startidx|page allocation failure.*order|ERROR bpm|bpm_alloc_buf|WLC_SCB_DEAUTHORIZE error \(-30\)" \
         > "$target_out" 2>/dev/null || true
 }
 
 mci_check_trigger() {
-    printf "--> ${COLOR_CYAN}[MLO-GUARD]${COLOR_RESET} Auditing Wi-Fi 7 MLO association telemetry and driver stability...\n"
+    printf "--> ${COLOR_CYAN}[MLO-GUARD]${COLOR_RESET} Auditing Wi-Fi 7 MLO association telemetry, FIFO buffers, and driver stability...\n"
 
     rm -f "$DETECTED_EVENTS_FILE" "$FLAPPING_MACS_FILE"
 
@@ -73,10 +76,16 @@ mci_check_trigger() {
     local triggered=0
     local mlo_count=0
     local udb_count=0
+    local fifo_count=0
+    local bpm_count=0
+    local deauth_count=0
 
     if [ -s "$DETECTED_EVENTS_FILE" ]; then
         mlo_count=$(grep -Ei "MLO ERROR" "$DETECTED_EVENTS_FILE" 2>/dev/null | wc -l | awk '{print $1}')
         udb_count=$(grep -Ei "tdts_core_ioctl|already exist in UDB" "$DETECTED_EVENTS_FILE" 2>/dev/null | wc -l | awk '{print $1}')
+        fifo_count=$(grep -Ei "fifo_bitmap_by_startidx" "$DETECTED_EVENTS_FILE" 2>/dev/null | wc -l | awk '{print $1}')
+        bpm_count=$(grep -Ei "page allocation failure.*order|ERROR bpm|bpm_alloc_buf" "$DETECTED_EVENTS_FILE" 2>/dev/null | wc -l | awk '{print $1}')
+        deauth_count=$(grep -Ei "WLC_SCB_DEAUTHORIZE error \(-30\)" "$DETECTED_EVENTS_FILE" 2>/dev/null | wc -l | awk '{print $1}')
 
         # 1. Check for Wi-Fi 7 MLO association storm
         if [ "$mlo_count" -ge "$MLO_LOOP_THRESHOLD" ]; then
@@ -95,6 +104,27 @@ mci_check_trigger() {
         if [ "$udb_count" -ge "$UDB_FAULT_THRESHOLD" ] || grep -Eiq "tdts_core_ioctl.*(fail|error)" "$DETECTED_EVENTS_FILE" 2>/dev/null; then
             printf "${COLOR_YELLOW}${COLOR_BOLD}--> [TRIGGERED]${COLOR_RESET} ${COLOR_RED}${COLOR_BOLD}Trend Micro DPI UDB table collision flood / ioctl failure detected (%d events)!${COLOR_RESET}\n" \
                 "$udb_count"
+            triggered=1
+        fi
+
+        # 3. Check for Broadcom wireless FIFO ring buffer congestion
+        if [ "$fifo_count" -ge "$FIFO_FAULT_THRESHOLD" ]; then
+            printf "${COLOR_YELLOW}${COLOR_BOLD}--> [TRIGGERED]${COLOR_RESET} ${COLOR_RED}${COLOR_BOLD}Broadcom wireless FIFO ring buffer congestion detected (%d events)!${COLOR_RESET}\n" \
+                "$fifo_count"
+            triggered=1
+        fi
+
+        # 4. Check for Broadcom Buffer Pool Manager (BPM) DMA memory exhaustion
+        if [ "$bpm_count" -ge "$BPM_FAULT_THRESHOLD" ]; then
+            printf "${COLOR_YELLOW}${COLOR_BOLD}--> [TRIGGERED]${COLOR_RESET} ${COLOR_RED}${COLOR_BOLD}Broadcom Buffer Pool Manager (BPM) DMA page allocation failure detected (%d events)!${COLOR_RESET}\n" \
+                "$bpm_count"
+            triggered=1
+        fi
+
+        # 5. Check for driver deauthorization loop storm (error -30)
+        if [ "$deauth_count" -ge "$DEAUTH_STORM_THRESHOLD" ]; then
+            printf "${COLOR_YELLOW}${COLOR_BOLD}--> [TRIGGERED]${COLOR_RESET} ${COLOR_RED}${COLOR_BOLD}Broadcom wireless driver deauth storm detected (%d events with error -30)!${COLOR_RESET}\n" \
+                "$deauth_count"
             triggered=1
         fi
     fi
@@ -174,12 +204,23 @@ mci_run() {
     fi
 
     # --------------------------------------------------------------------------
-    # Step 2: Flush Stale Kernel Memory & Flow Tables
+    # Step 2: Mitigate Broadcom FIFO Congestion & Buffer Pool Exhaustion
     # --------------------------------------------------------------------------
-    printf "--> ${COLOR_CYAN}[HEAL]${COLOR_RESET} Flushing stale kernel page cache & conntrack buffers...\n"
-    sync 2>/dev/null || true
-    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-    actions_taken="${actions_taken}Flushed kernel page cache. "
+    if grep -Eiq "fifo_bitmap_by_startidx|page allocation failure|ERROR bpm|bpm_alloc_buf|WLC_SCB_DEAUTHORIZE error \(-30\)" "$DETECTED_EVENTS_FILE" 2>/dev/null; then
+        printf "--> ${COLOR_YELLOW}[HEAL]${COLOR_RESET} Broadcom wireless buffer congestion detected. Purging flow cache & reclaiming DMA buffers...\n"
+        if which fc >/dev/null 2>&1; then
+            fc flush 2>/dev/null || true
+        fi
+        sync 2>/dev/null || true
+        echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+        echo "[$now_ts] BROADCOM_FIFO_BPM_HEAL: Purged flow caches and reclaimed DMA slab buffers" >> "$AUDIT_LOG"
+        actions_taken="${actions_taken}Flushed Broadcom flow cache & recovered DMA slab buffers. "
+    else
+        printf "--> ${COLOR_CYAN}[HEAL]${COLOR_RESET} Flushing stale kernel page cache & conntrack buffers...\n"
+        sync 2>/dev/null || true
+        echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+        actions_taken="${actions_taken}Flushed kernel page cache. "
+    fi
 
     # --------------------------------------------------------------------------
     # Step 3: Heal Trend Micro DPI / WRS Subsystem (if ioctl fault detected)
